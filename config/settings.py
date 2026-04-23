@@ -46,6 +46,21 @@ class Settings:
     breakeven_on_tp1: bool
     market_timezone: str
     enable_debug_logs: bool
+    watchlist: tuple  # ("THYAO", "GARAN", ...)
+
+
+_DEFAULT_WATCHLIST = (
+    "THYAO", "ASELS", "KCHOL", "GARAN", "AKBNK",
+    "EREGL", "TUPRS", "SAHOL", "BIMAS", "ISCTR",
+)
+
+
+def _parse_watchlist(raw: str) -> tuple:
+    """
+    'THYAO,GARAN, AKBNK' → ('THYAO', 'GARAN', 'AKBNK')
+    Boşluk ve büyük/küçük harf toleransı vardır.
+    """
+    return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
 
 
 def get_settings() -> Settings:
@@ -68,6 +83,9 @@ def get_settings() -> Settings:
     state_rel = os.getenv("SIGNAL_STATE_PATH", "data/signal_state.json")
     signal_state_path = (Path(state_rel) if Path(state_rel).is_absolute() else _PROJECT_ROOT / state_rel)
 
+    watchlist_raw = os.getenv("WATCHLIST", "").strip()
+    watchlist = _parse_watchlist(watchlist_raw) if watchlist_raw else _DEFAULT_WATCHLIST
+
     return Settings(
         bot_token=bot_token,
         chat_id=chat_id,
@@ -84,6 +102,7 @@ def get_settings() -> Settings:
         breakeven_on_tp1=breakeven,
         market_timezone=market_tz,
         enable_debug_logs=debug_logs,
+        watchlist=watchlist,
     )
 
 

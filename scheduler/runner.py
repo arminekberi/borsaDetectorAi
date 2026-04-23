@@ -21,7 +21,6 @@ from market.market_calendar import (
     is_signal_generation_time,
 )
 from market.models import Signal, SignalType
-from market.symbols import WATCHLIST
 from strategy.signal_engine import evaluate_symbol
 
 logger = logging.getLogger(__name__)
@@ -113,7 +112,7 @@ class ScanRunner:
             logger.info("Market closed, skipping signal generation")
             return
 
-        for symbol, _anchor in WATCHLIST:
+        for symbol in self.settings.watchlist:
             try:
                 self._tracking_update(symbol)
             except Exception:
@@ -129,7 +128,7 @@ class ScanRunner:
             return
 
         self._last_4h_key = key
-        for symbol, _anchor in WATCHLIST:
+        for symbol in self.settings.watchlist:
             try:
                 self._generate_4h_setup(symbol)
             except Exception:

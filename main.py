@@ -21,7 +21,6 @@ import sys
 
 from config.settings import get_settings, validate_telegram_credentials
 from market.data_fetcher import build_fetcher
-from market.symbols import WATCHLIST
 from alerts.state_manager import StateManager
 from bot.telegram_sender import send_test_message
 from scheduler.runner import ScanRunner
@@ -50,19 +49,12 @@ def main() -> None:
 
     fetcher = build_fetcher(settings.data_source or "yahoo")
 
-    # Test için tek hisse verisini yazdır (istenen kontrol çıktısı)
-    try:
-        test_symbol, test_anchor = WATCHLIST[0]
-        test_df = fetcher.fetch_ohlcv(
-            test_symbol,
-            settings.primary_timeframe.lower(),
-            bars=30,
-            anchor_price=test_anchor,
-        )
-        logger.info("İlk test fetcher: %s", fetcher.__class__.__name__)
-        print(test_df.tail() if test_df is not None else None)
-    except Exception:
-        logger.exception("İlk veri çekim testi başarısız.")
+    logger.info(
+        "Takip listesi (%d hisse): %s",
+        len(settings.watchlist),
+        ", ".join(settings.watchlist),
+    )
+
     state = StateManager(
         path=settings.signal_state_path,
         watch_expiry_hours=settings.watch_expiry_hours,
