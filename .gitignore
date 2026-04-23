@@ -1,0 +1,32 @@
+# Ortam değişkenleri — asla commit etme
+.env
+
+# Sanal ortam
+.venv/
+venv/
+env/
+
+# Log dosyaları
+logs/
+
+# Önbellek
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Yüklenmiş paketler
+*.egg-info/
+dist/
+build/
+
+# Geçici dosyalar
+*.tmp
+*.bak

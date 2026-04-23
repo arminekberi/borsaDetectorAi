@@ -1,0 +1,1 @@
+"""Bildirim ve durum yönetimi."""
