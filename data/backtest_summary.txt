@@ -1,0 +1,27 @@
+BIST Signal Strategy — Walk-Forward Backtest
+Generated : 2026-04-30T16:13:52.979067+00:00
+Symbols   : AKBNK, ASELS
+Period    : 1 year of Yahoo 60m data resampled to 4H
+SL / TP1  : ATR×1.5 / ATR×2.5  (ATR period=14, computed at signal bar)
+TP2 tested: ATR×4.0
+Expiry    : 72h (18 bars)
+
+PER SYMBOL
+────────────────────────────────────────────────────────────────────────────────
+
+AKBNK
+  TP2×4.0    trades=46   win=39.1 % rr=0.254  dd=16.37 % dur=47h sigs=119  SL=21  TP2=8   Exp=11  BE=6
+             best : AKBNK SELL @ 85.0 → 76.2118 (+10.34%, TP2)
+             worst: AKBNK BUY @ 89.8 → 86.2722 (-3.93%, SL)
+
+ASELS
+  TP2×4.0    trades=37   win=43.2 % rr=0.440  dd=9.02  % dur=37h sigs=75   SL=15  TP2=9   Exp=8   BE=5
+             best : ASELS BUY @ 279.5 → 304.79 (+9.05%, TP2)
+             worst: ASELS SELL @ 132.3 → 138.3011 (-4.54%, SL)
+
+════════════════════════════════════════════════════════════════════════════════
+OVERALL (all symbols combined)
+════════════════════════════════════════════════════════════════════════════════
+  TP2×4.0    trades=83   win=41.0 % rr=0.337  dd=16.37 % dur=42h sigs=194  SL=36  TP2=17  Exp=19  BE=11
+             best : AKBNK SELL @ 85.0 → 76.2118 (+10.34%, TP2)
+             worst: ASELS SELL @ 132.3 → 138.3011 (-4.54%, SL)

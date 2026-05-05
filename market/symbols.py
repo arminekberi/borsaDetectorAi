@@ -10,16 +10,15 @@ from typing import List, Tuple
 
 # (sembol_kodu, temel_fiyat_anker) — MockFetcher deterministik seri üretmek için kullanır
 WATCHLIST: List[Tuple[str, float]] = [
-    ("THYAO", 285.0),
-    ("ASELS", 95.0),
-    ("KCHOL", 145.0),
-    ("GARAN", 145.0),
-    ("AKBNK", 52.0),
-    ("EREGL", 48.0),
-    ("TUPRS", 170.0),
-    ("SAHOL", 82.0),
-    ("BIMAS", 490.0),
-    ("ISCTR", 16.0),
+      ("ASELS",    95.0),
+      ("PAHOL",    30.0),
+      ("VAKFN",    45.0),
+      ("BORLEASE", 15.0),
+      ("EFOR",     20.0),
+      ("SMRVA",    25.0),
+      ("NTGAZ",    40.0),
+      ("INDES",    60.0),
+      ("FROTO",   800.0),
 ]
 
 

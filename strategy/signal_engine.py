@@ -14,6 +14,8 @@ import pandas as pd
 from market.models import Signal, SignalType
 from market.data_fetcher import YahooFinanceFetcher
 from strategy import candlestick, price_action
+from strategy.volume_analysis import analyze_volume
+from strategy.momentum import analyze_momentum
 from strategy.risk_management import compute_risk_levels
 from datetime import timezone
 
@@ -103,6 +105,25 @@ def evaluate_symbol(
             bullish_score += 0
             bearish_score += 0
 
+    vol = analyze_volume(df)
+    bullish_score += vol["bull_score"]
+    bearish_score += vol["bear_score"]
+    logger.debug("Volume scores for %s: bull=%d bear=%d details=%s", symbol, vol["bull_score"], vol["bear_score"], vol["details"])
+
+    mom = analyze_momentum(df)
+    bullish_score += mom["bull_score"]
+    bearish_score += mom["bear_score"]
+    logger.debug("Momentum scores for %s: bull=%d bear=%d details=%s", symbol, mom["bull_score"], mom["bear_score"], mom["details"])
+
+    # Dynamic max: sum of all maximum positive contributions across all modules.
+    # trend(2) + PA tags(4 bull / 1 bear) + patterns(4) + volume(3 bull / 2 bear) + momentum(3)
+    _MAX_BULL = 16
+    _MAX_BEAR = 12
+    dynamic_max = max(_MAX_BULL, _MAX_BEAR)  # 16
+
+    buy_threshold = dynamic_max * 0.40   # 6.4
+    watch_threshold = dynamic_max * 0.25  # 4.0
+
     # Net yön için eşik
     last_close = float(df.iloc[-1]["close"])
     entry = last_close
@@ -110,17 +131,17 @@ def evaluate_symbol(
     reasons: List[str] = []
     st: Optional[SignalType] = None
 
-    if bullish_score >= 3 and bullish_score > bearish_score:
+    if bullish_score >= buy_threshold and bullish_score > bearish_score:
         st = SignalType.BUY
         reasons.append("trend alignment" if trend == "bull" else "mixed trend")
         reasons.extend(pattern_tags)
         reasons.extend(pa_tags)
-    elif bearish_score >= 3 and bearish_score > bullish_score:
+    elif bearish_score >= buy_threshold and bearish_score > bullish_score:
         st = SignalType.SELL
         reasons.append("trend alignment" if trend == "bear" else "mixed trend")
         reasons.extend(pattern_tags)
         reasons.extend(pa_tags)
-    elif max(bullish_score, bearish_score) >= 2:
+    elif max(bullish_score, bearish_score) >= watch_threshold:
         st = SignalType.WATCH
         reasons.append("setup forming")
         reasons.extend(pattern_tags)
