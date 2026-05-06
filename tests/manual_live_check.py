@@ -12,11 +12,12 @@ yazdirir.
 from __future__ import annotations
 
 from market.data_fetcher import YahooFinanceFetcher
+from market.symbols import symbol_codes
 from strategy.signal_engine import evaluate_symbol
 
 
 def run() -> None:
-    symbols = ["THYAO", "ASELS", "KCHOL"]
+    symbols = symbol_codes()
     timeframe = "4h"
     lookback = 120
     fetcher = YahooFinanceFetcher()

@@ -13,6 +13,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from market.symbols import symbol_codes as _symbol_codes
+
 # Proje kökü: config/ bir üst dizin
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_SOURCE = "yahoo"
@@ -49,10 +51,7 @@ class Settings:
     watchlist: tuple  # ("THYAO", "GARAN", ...)
 
 
-_DEFAULT_WATCHLIST = (
-    "THYAO", "ASELS", "KCHOL", "GARAN", "AKBNK",
-    "EREGL", "TUPRS", "SAHOL", "BIMAS", "ISCTR",
-)
+_DEFAULT_WATCHLIST = tuple(_symbol_codes())
 
 
 def _parse_watchlist(raw: str) -> tuple:
