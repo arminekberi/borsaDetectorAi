@@ -126,6 +126,8 @@ class StateManager:
                 "signal_type": signal.signal_type.value,
                 "timeframe": signal.timeframe,
                 "reason": signal.reason,
+                "detected_patterns": list(signal.detected_patterns),
+                "trend_state": signal.trend_state,
                 "created_at": now.isoformat(),
                 "updated_at": now.isoformat(),
                 "expires_at": expires.isoformat(),

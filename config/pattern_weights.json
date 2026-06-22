@@ -1,0 +1,12 @@
+{
+  "bullish engulfing": 2.0,
+  "bearish engulfing": 2.0,
+  "bullish pin bar": 2.0,
+  "bearish pin bar": 2.0,
+  "inside bar": 0.0,
+  "support reaction": 1.0,
+  "resistance breakout": 1.0,
+  "breakout retest": 1.0,
+  "HH/HL structure": 1.0,
+  "LH/LL structure": 1.0
+}

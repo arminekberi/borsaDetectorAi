@@ -12,6 +12,7 @@ from typing import Optional
 
 from alerts.notifier import notify_signal
 from alerts.state_manager import StateManager
+from analytics.trade_logger import TradeLogger
 from config.settings import Settings
 from market.data_fetcher import BaseFetcher
 from market.market_calendar import (
@@ -31,6 +32,7 @@ class ScanRunner:
     settings: Settings
     fetcher: BaseFetcher
     state_manager: StateManager
+    trade_logger: Optional[TradeLogger] = None
     _last_4h_key: Optional[str] = None
 
     def _tracking_update(self, symbol: str) -> Optional[Signal]:
@@ -67,7 +69,7 @@ class ScanRunner:
                 signal.target_2,
                 transition.current_state,
             )
-        notify_signal(self.settings.bot_token, self.settings.chat_id, signal, transition)
+        notify_signal(self.settings.bot_token, self.settings.chat_id, signal, transition, self.trade_logger)
         return signal
 
     def _generate_4h_setup(self, symbol: str) -> None:
@@ -99,7 +101,7 @@ class ScanRunner:
                 signal.target_2,
                 transition.current_state,
             )
-        notify_signal(self.settings.bot_token, self.settings.chat_id, signal, transition)
+        notify_signal(self.settings.bot_token, self.settings.chat_id, signal, transition, self.trade_logger)
 
     def run_once(self) -> None:
         now = datetime.now(timezone.utc)

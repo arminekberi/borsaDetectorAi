@@ -6,8 +6,10 @@ Sinyal motoru: trend filtresi + mum formasyonları + price action birleşimi.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -23,6 +25,30 @@ from utils.helpers import round_price
 from utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
+
+_WEIGHTS_PATH = Path(__file__).resolve().parent.parent / "config" / "pattern_weights.json"
+
+_DEFAULT_WEIGHTS: Dict[str, float] = {
+    "bullish engulfing":   2.0,
+    "bearish engulfing":   2.0,
+    "bullish pin bar":     2.0,
+    "bearish pin bar":     2.0,
+    "inside bar":          0.0,
+    "support reaction":    1.0,
+    "resistance breakout": 1.0,
+    "breakout retest":     1.0,
+    "HH/HL structure":     1.0,
+    "LH/LL structure":     1.0,
+}
+
+
+def _load_weights() -> Dict[str, float]:
+    try:
+        if _WEIGHTS_PATH.exists():
+            return {**_DEFAULT_WEIGHTS, **json.loads(_WEIGHTS_PATH.read_text(encoding="utf-8"))}
+    except Exception as exc:
+        logger.warning("pattern_weights.json okunamadı, varsayılan kullanılıyor: %s", exc)
+    return dict(_DEFAULT_WEIGHTS)
 
 
 def _sma(series: pd.Series, window: int) -> pd.Series:
@@ -81,8 +107,9 @@ def evaluate_symbol(
     debug_window = df[["open", "high", "low", "close"]].tail(10)
     logger.info("Signal debug window %s:\n%s", symbol, debug_window.to_string())
 
-    bullish_score = 0
-    bearish_score = 0
+    weights = _load_weights()
+    bullish_score = 0.0
+    bearish_score = 0.0
 
     if trend == "bull":
         bullish_score += 2
@@ -91,19 +118,17 @@ def evaluate_symbol(
 
     for t in pa_tags:
         if t in ("HH/HL structure", "support reaction", "resistance breakout", "breakout retest"):
-            bullish_score += 1
+            bullish_score += weights.get(t, 1.0)
         if t in ("LH/LL structure",):
-            bearish_score += 1
+            bearish_score += weights.get(t, 1.0)
 
     for p in pattern_tags:
         pl = p.lower()
+        w = weights.get(p, 0.0)
         if "bullish" in pl:
-            bullish_score += 2
-        if "bearish" in pl:
-            bearish_score += 2
-        if "inside bar" in pl:
-            bullish_score += 0
-            bearish_score += 0
+            bullish_score += w
+        elif "bearish" in pl:
+            bearish_score += w
 
     vol = analyze_volume(df)
     bullish_score += vol["bull_score"]

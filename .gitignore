@@ -30,3 +30,7 @@ build/
 # Geçici dosyalar
 *.tmp
 *.bak
+
+# Runtime veri — server'da yaşar, git'e girmez
+data/trade_log.db
+data/signal_state.json

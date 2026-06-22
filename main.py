@@ -22,6 +22,7 @@ import sys
 from config.settings import get_settings, validate_telegram_credentials
 from market.data_fetcher import build_fetcher
 from alerts.state_manager import StateManager
+from analytics.trade_logger import TradeLogger
 from bot.telegram_sender import send_test_message
 from scheduler.runner import ScanRunner
 from utils.logger import setup_logging
@@ -61,11 +62,15 @@ def main() -> None:
         breakeven_on_tp1=settings.breakeven_on_tp1,
     )
 
+    trade_log_path = settings.signal_state_path.parent / "trade_log.db"
+    trade_logger = TradeLogger(trade_log_path)
+    logger.info("Trade log: %s", trade_log_path)
+
     logger.info(
         "Tarama başladı (mod: 15m boundary sleep, fetcher: %s)",
         settings.data_source or settings.fetcher_type,
     )
-    runner = ScanRunner(settings=settings, fetcher=fetcher, state_manager=state)
+    runner = ScanRunner(settings=settings, fetcher=fetcher, state_manager=state, trade_logger=trade_logger)
     runner.run_forever()
 
 
