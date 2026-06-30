@@ -16,14 +16,19 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from market.symbols import symbol_codes
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+_WATCHLIST_STR = ", ".join(symbol_codes())
+
 _SYSTEM_PROMPT = (
     "Sen BorsaDetector AI'ın asistanısın. Kullanıcı BIST hisseleri, teknik analiz, "
     "trading stratejileri ve genel finans hakkında sorular sorar. "
-    "Türkçe konuş, kısa ve net cevaplar ver."
+    "Türkçe konuş, kısa ve net cevaplar ver.\n\n"
+    f"Şu an aktif olarak takip ettiğin hisseler (watchlist): {_WATCHLIST_STR}"
 )
 
 _MAX_HISTORY = 20
