@@ -90,14 +90,22 @@ def _fetch_news() -> str:
     return result
 
 
-def _build_system_prompt() -> str:
+_PRICE_KEYWORDS = {"fiyat", "kaç", "değişim", "yüksel", "düş", "anlık", "güncel", "piyasa", "artış", "düşüş", "ne kadar", "kaçtan"}
+_NEWS_KEYWORDS  = {"haber", "gelişme", "son dakika", "duyuru"}
+
+
+def _build_system_prompt(user_message: str) -> str:
+    msg = user_message.lower()
+    wants_price = any(kw in msg for kw in _PRICE_KEYWORDS)
+    wants_news  = any(kw in msg for kw in _NEWS_KEYWORDS)
+
     parts = [_SYSTEM_PROMPT_BASE]
-    prices = _fetch_prices()
-    if prices:
-        parts.append(prices)
-    news = _fetch_news()
-    if news:
-        parts.append(news)
+    if wants_price:
+        parts.append(_fetch_prices())
+    if wants_news:
+        news = _fetch_news()
+        if news:
+            parts.append(news)
     return "\n\n".join(parts)
 
 _MAX_HISTORY = 20
@@ -128,7 +136,7 @@ def get_claude_response(chat_id: str, user_message: str) -> str:
     response = _get_anthropic().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
-        system=_build_system_prompt(),
+        system=_build_system_prompt(user_message),
         messages=history,
     )
 
