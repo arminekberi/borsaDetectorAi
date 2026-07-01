@@ -48,7 +48,7 @@ class Settings:
     breakeven_on_tp1: bool
     market_timezone: str
     enable_debug_logs: bool
-    watchlist: tuple  # ("THYAO", "GARAN", ...)
+    watchlist: tuple  # ("ASELS", "KATMR", ...) — market/symbols.py'den gelir
 
 
 _DEFAULT_WATCHLIST = tuple(_symbol_codes())
@@ -56,7 +56,7 @@ _DEFAULT_WATCHLIST = tuple(_symbol_codes())
 
 def _parse_watchlist(raw: str) -> tuple:
     """
-    'THYAO,GARAN, AKBNK' → ('THYAO', 'GARAN', 'AKBNK')
+    'ASELS,KATMR, EKGYO' → ('ASELS', 'KATMR', 'EKGYO')
     Boşluk ve büyük/küçük harf toleransı vardır.
     """
     return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
