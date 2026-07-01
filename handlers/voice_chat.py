@@ -7,11 +7,13 @@ import asyncio
 import logging
 import os
 import tempfile
+import time
 from collections import defaultdict
 from typing import Dict, List, Optional
 
 import anthropic
 import openai
+import yfinance as yf
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -22,14 +24,81 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-_WATCHLIST_STR = ", ".join(symbol_codes())
+_WATCHLIST = symbol_codes()
+_WATCHLIST_STR = ", ".join(_WATCHLIST)
 
-_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_BASE = (
     "Sen BorsaDetector AI'ın asistanısın. Kullanıcı BIST hisseleri, teknik analiz, "
     "trading stratejileri ve genel finans hakkında sorular sorar. "
     "Türkçe konuş, kısa ve net cevaplar ver.\n\n"
-    f"Şu an aktif olarak takip ettiğin hisseler (watchlist): {_WATCHLIST_STR}"
+    f"Takip ettiğin hisseler: {_WATCHLIST_STR}"
 )
+
+_PRICE_CACHE: Dict = {"data": "", "ts": 0.0}
+_NEWS_CACHE: Dict = {"data": "", "ts": 0.0}
+_PRICE_TTL = 300   # 5 dakika
+_NEWS_TTL  = 900   # 15 dakika
+
+
+def _fetch_prices() -> str:
+    now = time.time()
+    if _PRICE_CACHE["data"] and now - _PRICE_CACHE["ts"] < _PRICE_TTL:
+        return _PRICE_CACHE["data"]
+
+    lines = []
+    for sym in _WATCHLIST:
+        try:
+            info = yf.Ticker(f"{sym}.IS").fast_info
+            price = getattr(info, "last_price", None)
+            prev  = getattr(info, "previous_close", None)
+            if price and prev and prev > 0:
+                pct  = (price - prev) / prev * 100
+                sign = "+" if pct >= 0 else ""
+                lines.append(f"  {sym}: {price:.2f} TL ({sign}{pct:.2f}%)")
+            else:
+                lines.append(f"  {sym}: veri yok")
+        except Exception:
+            lines.append(f"  {sym}: çekilemedi")
+
+    result = "Güncel fiyatlar (BIST):\n" + "\n".join(lines)
+    _PRICE_CACHE["data"] = result
+    _PRICE_CACHE["ts"] = now
+    return result
+
+
+def _fetch_news() -> str:
+    now = time.time()
+    if _NEWS_CACHE["data"] and now - _NEWS_CACHE["ts"] < _NEWS_TTL:
+        return _NEWS_CACHE["data"]
+
+    headlines = []
+    for sym in _WATCHLIST:
+        try:
+            news = yf.Ticker(f"{sym}.IS").news or []
+            for item in news[:2]:
+                title = (item.get("content") or {}).get("title") or item.get("title", "")
+                if title:
+                    headlines.append(f"[{sym}] {title}")
+        except Exception:
+            pass
+
+    result = ""
+    if headlines:
+        result = "Son haberler:\n" + "\n".join(headlines[:12])
+    _NEWS_CACHE["data"] = result
+    _NEWS_CACHE["ts"] = now
+    return result
+
+
+def _build_system_prompt() -> str:
+    parts = [_SYSTEM_PROMPT_BASE]
+    prices = _fetch_prices()
+    if prices:
+        parts.append(prices)
+    news = _fetch_news()
+    if news:
+        parts.append(news)
+    return "\n\n".join(parts)
 
 _MAX_HISTORY = 20
 _conversation_history: Dict[str, List[dict]] = defaultdict(list)
@@ -59,7 +128,7 @@ def get_claude_response(chat_id: str, user_message: str) -> str:
     response = _get_anthropic().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
-        system=_SYSTEM_PROMPT,
+        system=_build_system_prompt(),
         messages=history,
     )
 
