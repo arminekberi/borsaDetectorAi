@@ -63,7 +63,20 @@ Yaklaşık 55 yapılandırma geliştirme verisinde denendi. Görülmemiş dönem
 
 - Evren 92 güncel BIST hissesi olduğu için hayatta kalma yanılgısı içerir.
 - Mevcut izleme listesinin çoğu bu veride yok; listeye özel test yapılamadı.
-- AI incelemesi, Telegram ve canlı akış bu aşamaya dahil değildir.
+- Gün içi ön sinyal, canlı stop takibi ve AI analisti backtest edilmedi; bunlar kağıt modunda ölçülür.
+
+## Canlı akış
+
+- `10:30, 12:00, 14:00, 16:00, 17:30`: izleme listesinde ön sinyal taraması
+- Skor ≥ 70 ise AI analisti skoru görmeden inceler; AL, BEKLE veya ALMA bildirimi gönderilir
+- 15 dakikada bir stop ve alım sınırı kontrol edilir
+- `18:45`: günlük skor kesinleşir, ön sinyal teyit veya iptal edilir
+- Haftanın son işlem günü: skor < 50 olan pozisyon için SAT
+- Pazar `20:00`: geçerli AL adayları hafta sonu haberleriyle yeniden incelenir
+
+`PAPER_MODE=true` iken AL sinyalleri kağıt portföye girer. AI'ın almadığı adaylar gölge portföyde izlenir.
+
+Komutlar: `/izle`, `/birak`, `/takip`, `/aldim`, `/sattim`, `/portfoy`, `/liste`, `/performans`, `/tara`, `/yardim`.
 
 ## Çalıştırma
 

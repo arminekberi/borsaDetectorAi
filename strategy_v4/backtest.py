@@ -20,6 +20,7 @@ import pandas as pd
 
 from strategy_v4.config import StrategyConfig
 from strategy_v4.features import compute_features, compute_score, market_regime
+from strategy_v4.sizing import initial_stop, max_entry_price, position_quantity
 
 
 @dataclass
@@ -197,18 +198,12 @@ def run_backtest(
                 elif l[i, s] <= order["limit"]:
                     price = float(order["limit"])
                 if price is not None:
-                    stop = price - cfg.stop_atr * order["atr"]
+                    stop = initial_stop(price, order["atr"], cfg)
                     risk_ps = price - stop
                     equity_now = cash + sum(
                         pos.qty * (o[i, q] if not np.isnan(o[i, q]) else last_close[q]) for q, pos in positions.items()
                     )
-                    qty = min(
-                        cfg.risk_per_trade * equity_now / risk_ps,
-                        cfg.max_position_pct * equity_now / price,
-                        cfg.max_pct_of_adv * order["adv"] / price,
-                        cash / (price * (1.0 + cfg.cost_per_side)),
-                    )
-                    qty = int(max(np.floor(qty), 0))
+                    qty = position_quantity(equity_now, price, stop, order["adv"], cash, cfg)
                     if qty > 0:
                         cost = qty * price * cfg.cost_per_side
                         cash -= qty * price + cost
@@ -235,13 +230,14 @@ def run_backtest(
                 last_close[s] = c[i, s]
 
         scan_today = _is_scan_day(dates, i, cfg.scan_weekday)
+        exit_today = _is_scan_day(dates, i, cfg.exit_weekday)
         for s, pos in positions.items():
             if np.isnan(c[i, s]):
                 continue
             pos.top_close = max(pos.top_close, float(c[i, s]))
             if cfg.trail_atr is not None:
                 pos.stop = max(pos.stop, pos.top_close - cfg.trail_atr * float(atr[i, s]))
-            if s in exit_flags or (cfg.exit_checks_on_scan_day_only and not scan_today):
+            if s in exit_flags or (cfg.exit_checks_on_scan_day_only and not exit_today):
                 continue
             if cfg.exit_below_ema50 and c[i, s] < ema50[i, s]:
                 exit_flags[s] = "ema50"
@@ -259,7 +255,7 @@ def run_backtest(
                     continue
                 if eligible[i, s] and score[i, s] >= cfg.buy_score:
                     pending[s] = {
-                        "limit": float(c[i, s] + cfg.entry_buffer_atr * atr[i, s]), "atr": float(atr[i, s]),
+                        "limit": max_entry_price(float(c[i, s]), float(atr[i, s]), cfg), "atr": float(atr[i, s]),
                         "adv": float(panel.adv[i, s]), "score": float(score[i, s]),
                         "days_left": cfg.entry_valid_sessions,
                     }

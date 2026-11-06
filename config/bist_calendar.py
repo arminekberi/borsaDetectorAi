@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+# Kaynak: Borsa Istanbul Pay Piyasasi 2026 tatil tablosu.
+# Takvimde olmayan yillarda bot uyari verir; yeni tablo yayimlaninca buraya eklenmelidir.
+KNOWN_CALENDAR_YEARS = {2026}
+
 # ISO tarih formati: YYYY-MM-DD
 BIST_HOLIDAYS = {
     "2026-01-01",
     "2026-03-20",
     "2026-03-21",
     "2026-03-22",
-    "2026-03-23",
     "2026-04-23",
     "2026-05-01",
     "2026-05-19",
+    "2026-05-27",
+    "2026-05-28",
+    "2026-05-29",
+    "2026-05-30",
     "2026-07-15",
     "2026-08-30",
     "2026-10-29",
@@ -19,9 +26,8 @@ BIST_HOLIDAYS = {
 
 BIST_HALF_DAYS = {
     "2026-03-19",
-    "2026-05-18",
-    "2026-09-24",
-    "2026-12-31",
+    "2026-05-26",
+    "2026-10-28",
 }
 
 # Seans saatleri (Europe/Istanbul) — BIST resmi: 09:40–18:10

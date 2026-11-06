@@ -34,3 +34,6 @@ build/
 # Runtime veri — server'da yaşar, git'e girmez
 data/trade_log.db
 data/signal_state.json
+data/bot_v4.db
+data/bot_v4.db-wal
+data/bot_v4.db-shm

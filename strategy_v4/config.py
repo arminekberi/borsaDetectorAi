@@ -66,6 +66,7 @@ class StrategyConfig:
     trail_atr: Optional[float] = None  # None: iz süren stop yok, çıkışı skor yönetir
     exit_below_ema50: bool = False
     exit_checks_on_scan_day_only: bool = True
+    exit_weekday: Optional[int] = 4  # Skor çıkışının kontrol günü: 4 haftanın son işlem günü, None her gün
     time_stop_days: Optional[int] = None  # None: kapalı
     time_stop_r: float = 1.0
 

@@ -1,0 +1,16 @@
+[Unit]
+Description=BIST bot v4
+After=network-online.target
+Wants=network-online.target
+Conflicts=bistbot.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/borsaDetectorAi
+ExecStart=/root/borsaDetectorAi/.venv/bin/python main_v4.py
+Restart=always
+RestartSec=20
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

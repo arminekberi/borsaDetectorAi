@@ -266,7 +266,7 @@ def test_end_to_end_is_deterministic():
 
 
 def test_score_exit_happens_next_open(force_signal, monkeypatch):
-    cfg = StrategyConfig(scan_weekday=None)
+    cfg = StrategyConfig(scan_weekday=None, exit_weekday=None)
     rows = [[100, 101, 99, 100], [100, 102, 99, 101], [101, 103, 100, 102], [103, 104, 102, 103], [104, 105, 103, 104]]
     _, p = forced_panel(rows, cfg, atr=1.0)
     s = np.full((5, 1), 60.0)

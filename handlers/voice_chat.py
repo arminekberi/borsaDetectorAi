@@ -9,7 +9,7 @@ import os
 import tempfile
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import anthropic
 import openai
@@ -24,15 +24,21 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-_WATCHLIST = symbol_codes()
-_WATCHLIST_STR = ", ".join(_WATCHLIST)
-
 _SYSTEM_PROMPT_BASE = (
     "Sen BorsaDetector AI'ın asistanısın. Kullanıcı BIST hisseleri, teknik analiz, "
     "trading stratejileri ve genel finans hakkında sorular sorar. "
-    "Türkçe konuş, kısa ve net cevaplar ver.\n\n"
-    f"Takip ettiğin hisseler: {_WATCHLIST_STR}"
+    "Türkçe konuş, kısa ve net cevaplar ver."
 )
+
+_watchlist_provider: Callable[[], List[str]] = symbol_codes
+_context_provider: Callable[[], str] = lambda: ""
+
+
+def set_context_provider(watchlist: Callable[[], List[str]], context: Callable[[], str]) -> None:
+    """Asistanın güncel izleme listesi ve portföy bilgisini görmesini sağlar."""
+    global _watchlist_provider, _context_provider
+    _watchlist_provider = watchlist
+    _context_provider = context
 
 _PRICE_CACHE: Dict = {"data": "", "ts": 0.0}
 _NEWS_CACHE: Dict = {"data": "", "ts": 0.0}
@@ -46,7 +52,7 @@ def _fetch_prices() -> str:
         return _PRICE_CACHE["data"]
 
     lines = []
-    for sym in _WATCHLIST:
+    for sym in _watchlist_provider():
         try:
             info = yf.Ticker(f"{sym}.IS").fast_info
             price = getattr(info, "last_price", None)
@@ -72,7 +78,7 @@ def _fetch_news() -> str:
         return _NEWS_CACHE["data"]
 
     headlines = []
-    for sym in _WATCHLIST:
+    for sym in _watchlist_provider():
         try:
             news = yf.Ticker(f"{sym}.IS").news or []
             for item in news[:2]:
@@ -99,7 +105,10 @@ def _build_system_prompt(user_message: str) -> str:
     wants_price = any(kw in msg for kw in _PRICE_KEYWORDS)
     wants_news  = any(kw in msg for kw in _NEWS_KEYWORDS)
 
-    parts = [_SYSTEM_PROMPT_BASE]
+    parts = [_SYSTEM_PROMPT_BASE, "Takip ettiğin hisseler: " + ", ".join(_watchlist_provider())]
+    context = _context_provider()
+    if context:
+        parts.append(context)
     if wants_price:
         parts.append(_fetch_prices())
     if wants_news:
@@ -134,13 +143,13 @@ def get_claude_response(chat_id: str, user_message: str) -> str:
     history.append({"role": "user", "content": user_message})
 
     response = _get_anthropic().messages.create(
-        model="claude-sonnet-4-6",
+        model=os.getenv("AI_MODEL", "claude-sonnet-5-5"),
         max_tokens=1024,
         system=_build_system_prompt(user_message),
         messages=history,
     )
 
-    reply = response.content[0].text
+    reply = next((b.text for b in response.content if b.type == "text"), "")
     history.append({"role": "assistant", "content": reply})
 
     if len(history) > _MAX_HISTORY:
