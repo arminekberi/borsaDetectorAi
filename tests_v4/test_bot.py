@@ -74,8 +74,11 @@ class FakeMarket:
     def index_last(self, as_of):
         return float(self.xu.iloc[-5])
 
-    def hourly(self, symbol):
+    def hourly(self, symbol, as_of=None):
         return self.frames[symbol].tail(10)
+
+    def index_hourly(self, as_of=None):
+        return pd.DataFrame()
 
     def validate_symbol(self, symbol, as_of):
         return symbol in self.valid

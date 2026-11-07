@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -21,15 +21,26 @@ def wilder_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int = 
     return tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
 
 
-def compute_features(df: pd.DataFrame, xu100: pd.Series, cfg: StrategyConfig) -> pd.DataFrame:
+def compute_features(
+    df: pd.DataFrame,
+    xu100: pd.Series,
+    cfg: StrategyConfig,
+    volume_until: Optional[pd.Timestamp] = None,
+) -> pd.DataFrame:
     """
     Skordan bağımsız hisse özelliklerini hesaplar.
 
     `df`: tarih indeksli `open, high, low, close, volume`.
     `xu100`: tarih indeksli endeks kapanışı.
+
+    `volume_until` verilirse hacme dayalı sütunlar (`avg_volume`, `adv_try`,
+    `udv`, `candle_volume_ok`) yalnızca bu tarihe kadarki barlardan hesaplanır
+    ve sonraki satırlara taşınır. Gün içi kısmi bar değerlendirmesinde kısmi
+    barın (ve yarım günün) hacmi hiçbir ortalamaya girmesin diye kullanılır —
+    spesifikasyon Bölüm 4. `None` iken davranış değişmez: tüm barlar kullanılır.
     """
     f = df[["open", "high", "low", "close", "volume"]].copy()
-    c, h, v = f["close"], f["high"], f["volume"]
+    c, h = f["close"], f["high"]
     f["ema20"] = ema(c, 20)
     f["ema50"] = ema(c, 50)
     f["ema200"] = ema(c, 200)
@@ -42,15 +53,28 @@ def compute_features(df: pd.DataFrame, xu100: pd.Series, cfg: StrategyConfig) ->
     f["rs63"] = c.pct_change(63) - x.pct_change(63)
     f["high_ratio"] = c / h.rolling(252, min_periods=120).max()
 
-    prev = c.shift(1)
-    up_volume = v.where(c > prev, 0.0).rolling(20).sum()
-    down_volume = v.where(c < prev, 0.0).rolling(20).sum()
-    f["udv"] = up_volume / down_volume.replace(0.0, np.nan)
-    f["avg_volume"] = v.rolling(20).mean()
-    f["adv_try"] = (c * v).rolling(20).mean()
+    # Hacim bileşenleri: `volume_until` verilirse sadece o tarihe kadarki
+    # (kapanmış) barlardan hesaplanıp sonraki satırlara taşınır.
+    src = f if volume_until is None else f.loc[: pd.Timestamp(volume_until)]
+    sc, sv = src["close"], src["volume"]
+    sprev = sc.shift(1)
+    up_volume = sv.where(sc > sprev, 0.0).rolling(20).sum()
+    down_volume = sv.where(sc < sprev, 0.0).rolling(20).sum()
+    udv = up_volume / down_volume.replace(0.0, np.nan)
+    avg_volume = sv.rolling(20).mean()
+    adv_try = (sc * sv).rolling(20).mean()
+    volume_ok = sv >= avg_volume
 
-    f = f.join(detect_candles(f))
-    f["candle_volume_ok"] = v >= f["avg_volume"]
+    if volume_until is None:
+        f["udv"], f["avg_volume"], f["adv_try"] = udv, avg_volume, adv_try
+        f = f.join(detect_candles(f))
+        f["candle_volume_ok"] = volume_ok
+    else:
+        f["udv"] = udv.reindex(f.index).ffill()
+        f["avg_volume"] = avg_volume.reindex(f.index).ffill()
+        f["adv_try"] = adv_try.reindex(f.index).ffill()
+        f = f.join(detect_candles(f))
+        f["candle_volume_ok"] = volume_ok.reindex(f.index).ffill().fillna(False).astype(bool)
     return f
 
 

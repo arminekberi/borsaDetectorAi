@@ -186,7 +186,7 @@ class Engine:
         day = now.date()
         try:
             daily = self.market.daily(symbol, day, include_today=include_today)
-            hourly = self.market.hourly(symbol)
+            hourly = self.market.hourly(symbol, day)
             xu = self.market.xu100(day, include_today=include_today)
             return self.analyst.review(symbol, now, last, daily, hourly, xu, force=force)
         except Exception as exc:

@@ -48,20 +48,37 @@ class StrategyConfig:
     use_regime: bool = False  # Geliştirmede getiriyi düşürdü; ölçüm için duruyor
 
     # Giriş
-    entry_buffer_atr: float = 0.5
+    entry_buffer_atr: float = 0.5  # exit_model="atr" için alım sınırı payı
+    entry_buffer_pct: float = 0.01  # exit_model="fixed_pct": MAX_ENTRY = referans × 1,01
     entry_valid_sessions: int = 2
     max_new_entries_per_day: int = 2
     scan_weekday: Optional[int] = 4  # None: her gün; 4: haftanın son işlem günü
 
-    # Risk
-    risk_per_trade: float = 0.025  # Stoplanırsa portföyden en fazla kayıp
-    max_position_pct: float = 0.125
-    max_positions: int = 8
-    max_per_sector: int = 3
+    # Risk (spesifikasyon Bölüm 8)
+    risk_per_trade: float = 0.01  # Stoplanırsa portföyden en fazla kayıp
+    max_position_pct: float = 0.20
+    max_positions: int = 5
+    max_per_sector: int = 2
     monthly_brake: float = -0.06
     max_pct_of_adv: float = 0.05
 
-    # Çıkış
+    # Çıkış modeli: "fixed_pct" (sabit yüzde, canlı sistem) | "atr" (eski v4, karşılaştırma için)
+    exit_model: str = "fixed_pct"
+
+    # Sabit yüzde çıkışları (spesifikasyon Bölüm 8). Stop ve TP'ler kullanıcı
+    # kararıdır; backtest sonucuna göre değiştirilmez.
+    stop_pct: float = 0.04  # stop = giriş × 0,96
+    tp1_pct: float = 0.06
+    tp2_pct: float = 0.10
+    tp3_pct: float = 0.15
+    tp1_sell_frac: float = 1.0 / 3.0
+    tp2_sell_frac: float = 1.0 / 3.0  # TP3'te kalanın tamamı satılır
+    move_stop_after_tp1: str = "entry"  # TP1 sonrası stop girişe (başa baş)
+    move_stop_after_tp2: str = "tp1"  # TP2 sonrası stop TP1 seviyesine
+    tp1_horizon_sessions: int = 10  # bu sürede TP1 gelmezse zaman stopu
+    max_hold_sessions: int = 30
+
+    # Eski v4 ATR çıkışı (exit_model="atr" ile seçilir)
     stop_atr: float = 4.0
     trail_atr: Optional[float] = None  # None: iz süren stop yok, çıkışı skor yönetir
     exit_below_ema50: bool = False

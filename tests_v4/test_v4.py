@@ -280,8 +280,11 @@ def test_score_exit_happens_next_open(force_signal, monkeypatch):
 
 
 def test_max_position_cap_limits_each_holding(force_signal):
+    # Spesifikasyon Bölüm 8 ile varsayılan max_position_pct 0,125 → 0,20 oldu.
+    # Pozisyon sınırı hâlâ bağlayıcı: 0,20 × 100.000 / 100 = 200 adet
+    # (risk sınırı 0,01 × 100.000 / 4 = 250 adet verirdi).
     cfg = StrategyConfig(scan_weekday=None, exit_score=None)
     rows = [[100, 101, 99, 100], [100, 101, 99.5, 100], [100, 101, 99.5, 100]]
     _, p = forced_panel(rows, cfg, atr=1.0)
     force_signal(len(rows))
-    assert run_backtest(p, cfg, "2024-01-01", "2024-01-03").trades.iloc[0]["qty"] == 125
+    assert run_backtest(p, cfg, "2024-01-01", "2024-01-03").trades.iloc[0]["qty"] == 200
