@@ -1,7 +1,7 @@
 """Bot v4 birim testleri: Telegram, Yahoo ve Claude taklit edilir."""
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -9,7 +9,10 @@ import pandas as pd
 import pytest
 
 from bot_v4 import commands, session
-from bot_v4.analyst import AI_AL, AI_ALMA, AI_BEKLE, AI_YOK, Analyst, Review, extract_json, validate_payload
+from bot_v4.analyst import (
+    AI_AL, AI_ALMA, AI_SAT, AI_TUT, AI_YOK, Analyst, Review,
+    extract_json, validate_entry, validate_exit,
+)
 from bot_v4.engine import Engine
 from bot_v4.market import IntradayBar, StaleData, YahooMarket
 from bot_v4.scheduler import Scheduler
@@ -85,24 +88,41 @@ class FakeMarket:
 
 
 class FakeAnalyst:
-    def __init__(self, decision=AI_AL):
+    """Yeni tasarim: AL/ALMA + olasilik; satista SAT/TUT."""
+
+    def __init__(self, decision=AI_AL, olasilik=90.0, exit_decision=AI_SAT):
         self.decision = decision
+        self.olasilik = olasilik
+        self.exit_decision = exit_decision
         self.calls = []
+        self.exit_calls = []
 
     def review(self, symbol, now, last, daily, hourly, xu100, force=False):
         self.calls.append((symbol, now, force))
-        return Review(decision=self.decision, confidence=70.0, summary="özet", wait_condition="koşul", error="hata" if self.decision == AI_YOK else "",
-                      plan={"giris_alt": last * .99, "giris_ust": last, "stop": last * .9, "hedef_1": last * 1.1, "hedef_2": last * 1.2},
-                      counter_thesis=["risk"])
+        return Review(
+            decision=self.decision, olasilik=self.olasilik, summary="özet",
+            reasons=["gerekçe"], risks=["risk"], resistances=[last * 1.1],
+            error="hata" if self.decision == AI_YOK else "",
+        )
+
+    def review_exit(self, symbol, now, last, daily, xu100, position, force=False):
+        self.exit_calls.append((symbol, now))
+        return Review(
+            decision=self.exit_decision, olasilik=70.0, summary="satış özeti",
+            hold_condition="EMA50 üstünde kalırsa",
+        )
 
 
-def make_engine(tmp_path, frames=None, decision=AI_AL, paper=True, watch=None):
+def make_engine(tmp_path, frames=None, decision=AI_AL, paper=True, watch=None,
+                olasilik=90.0, exit_decision=AI_SAT, **cfg_kw):
     frames = frames or {"AAA": uptrend(seed=1)}
-    cfg = BotConfig(bot_token="t", chat_id="1", db_path=str(tmp_path / "b.db"), paper_mode=paper, ai_enabled=True)
+    cfg = BotConfig(bot_token="t", chat_id="1", db_path=str(tmp_path / "b.db"),
+                    paper_mode=paper, ai_enabled=True, **cfg_kw)
     store = Store(cfg.db_path)
     sent = []
     market = FakeMarket(frames)
-    engine = Engine(cfg, StrategyConfig(min_adv_try=1e6), store, market, FakeAnalyst(decision), sent.append, {})
+    engine = Engine(cfg, StrategyConfig(min_adv_try=1e6), store, market,
+                    FakeAnalyst(decision, olasilik, exit_decision), sent.append, {})
     for s in watch or frames:
         store.add_symbol(s, at(MONDAY, "09:00"))
     return engine, sent
@@ -134,7 +154,7 @@ def test_provisional_uses_closed_candle_points_only():
 def test_scan_sends_al_and_opens_paper_position(tmp_path):
     engine, sent = make_engine(tmp_path)
     engine.scan_intraday(at(MONDAY, "10:30"))
-    assert any("🟢 AL" in m and "[KAĞIT]" in m and "ÖN SİNYAL" in m for m in sent)
+    assert any("🟢 AL" in m and "[KAĞIT]" in m and "gün içi" in m and "EMİNLİK" in m for m in sent)
     p = engine.store.open_positions("paper")
     assert len(p) == 1 and p[0]["decision"] == AI_AL and p[0]["qty"] > 0
 
@@ -148,13 +168,41 @@ def test_same_day_scan_does_not_duplicate_or_call_ai_twice(tmp_path):
     assert len(engine.analyst.calls) == 1
 
 
-@pytest.mark.parametrize("decision,mark", [(AI_BEKLE, "🟡 BEKLE"), (AI_ALMA, "⛔ ALMA"), (AI_YOK, "KURAL AL, AI YOK")])
-def test_non_al_decisions_go_to_shadow_only(tmp_path, decision, mark):
-    engine, sent = make_engine(tmp_path, decision=decision)
+def test_alma_goes_to_shadow_only(tmp_path):
+    engine, sent = make_engine(tmp_path, decision=AI_ALMA, notify_alma=True)
     engine.scan_intraday(at(MONDAY, "10:30"))
-    assert any(mark in m for m in sent)
+    assert any("⛔ ALMA" in m for m in sent)
     assert engine.store.open_positions("paper") == []
     assert len(engine.store.open_positions("shadow")) == 1
+
+
+def test_ai_yok_warns_and_opens_nothing(tmp_path):
+    """AI_YOK 'AL sayılmaz, elle incele' demektir; gölgeye de girmez."""
+    engine, sent = make_engine(tmp_path, decision=AI_YOK)
+    engine.scan_intraday(at(MONDAY, "10:30"))
+    assert any("KURAL AL, AI YOK" in m for m in sent)
+    assert engine.store.open_positions("paper") == []
+    assert engine.store.open_positions("shadow") == []
+
+
+def test_alma_is_silent_by_default_but_still_shadowed(tmp_path):
+    """NOTIFY_ALMA=false (varsayılan): ALMA kullanıcıya gitmez, gölgede izlenir."""
+    engine, sent = make_engine(tmp_path, decision=AI_ALMA)
+    engine.scan_intraday(at(MONDAY, "10:30"))
+    assert not any("⛔ ALMA" in m for m in sent)
+    assert len(engine.store.open_positions("shadow")) == 1
+    assert any("gölgede izleniyor" in m for m in sent)  # sorgu özetinde tek satır
+
+
+def test_below_threshold_eminlik_is_not_notified(tmp_path):
+    """AI AL dese bile eminlik eşiğin altındaysa bildirim gitmez."""
+    engine, sent = make_engine(tmp_path, decision=AI_AL, olasilik=60.0)
+    engine.scan_intraday(at(MONDAY, "10:30"))
+    assert not any("🟢 AL" in m for m in sent)
+    assert engine.store.open_positions("paper") == []
+    assert len(engine.store.open_positions("shadow")) == 1
+    cand = engine.store.active_candidates() or engine.store.candidates_on(MONDAY)
+    assert cand[0]["eminlik"] < engine.cfg.min_eminlik
 
 
 def test_real_mode_never_opens_position_by_itself(tmp_path):
@@ -202,7 +250,8 @@ def test_close_cancels_weak_provisional_signal(tmp_path):
     frames = {"AAA": uptrend(end=date(2026, 10, 30), step=0.0)}
     engine, sent = make_engine(tmp_path, frames=frames, paper=False)
     day = engine.store.add_candidate(symbol="AAA", signal_date=MONDAY.isoformat(), stage="provisional", status="active", score=72, breakdown={}, reference=100.0,
-                                     atr=2.0, adv=1e7, max_entry=101.0, stop=92.0, qty=10, valid_until=MONDAY.isoformat(), decision=AI_AL, created_at="x")
+                                     atr=2.0, adv=1e7, max_entry=101.0, stop=92.0, qty=10, valid_until=MONDAY.isoformat(), decision=AI_AL, ai_olasilik=90.0,
+                                     eminlik=85.0, created_at="x")
     hist = frames["AAA"].copy()
     hist.loc[pd.Timestamp(MONDAY)] = [90.0, 91.0, 80.0, 81.0, 2e6]
     engine.market.frames["AAA"] = hist
@@ -226,7 +275,8 @@ def test_filled_paper_position_gets_cancel_notice_but_stays_open(tmp_path):
 def test_confirmed_candidate_expires_after_two_sessions(tmp_path):
     engine, sent = make_engine(tmp_path, paper=False)
     cid = engine.store.add_candidate(symbol="AAA", signal_date=MONDAY.isoformat(), stage="confirmed", status="active", score=75, breakdown={}, reference=100.0,
-                                     atr=2.0, adv=1e7, max_entry=101.0, stop=92.0, qty=10, valid_until=date(2026, 11, 4).isoformat(), decision=AI_AL, created_at="x")
+                                     atr=2.0, adv=1e7, max_entry=101.0, stop=92.0, qty=10, valid_until=date(2026, 11, 4).isoformat(), decision=AI_AL,
+                                     ai_olasilik=90.0, eminlik=85.0, created_at="x")
     engine.market.price["AAA"] = 110.0
     engine.monitor(at(date(2026, 11, 3), "10:15"))
     assert any("aşıldı" in m for m in sent)
@@ -240,9 +290,11 @@ def test_weekly_exit_flags_on_last_day_and_exits_next_session(tmp_path):
     friday = date(2026, 11, 6)
     frames = {"AAA": uptrend(end=friday, step=-0.004)}
     engine, sent = make_engine(tmp_path, frames=frames)
-    engine.store.open_position(symbol="AAA", mode="paper", entry=100.0, qty=10, stop=1.0, atr=2.0, opened_at=at(MONDAY, "10:30").isoformat())
+    engine.store.open_position(symbol="AAA", mode="paper", entry=100.0, qty=10, initial_qty=10,
+                               remaining_qty=10, stop=1.0, tp1=1e9, tp2=1e9, tp3=1e9, atr=2.0,
+                               opened_at=at(MONDAY, "10:30").isoformat())
     engine.close_job(at(friday, "18:45"))
-    assert any("SAT | Haftalık skor" in m for m in sent)
+    assert any("SAT | Kural skoru" in m for m in sent)
     assert len(engine.store.open_positions("paper")) == 1
     engine.monitor(at(date(2026, 11, 9), "10:15"))
     assert engine.store.closed_positions("paper")[0]["reason"] == "score"
@@ -277,12 +329,27 @@ def test_aldim_sattim_track_real_position(tmp_path):
     engine, sent = make_engine(tmp_path)
     now = at(MONDAY, "12:00")
     text = commands.aldim(engine, ["AAA", "150,50", "10"], now)
-    assert "Bağlayıcı stop" in text
+    assert "Stop" in text and "TP1" in text and "TP3" in text
     assert "zaten" in commands.aldim(engine, ["AAA", "150", "10"], now)
     p = engine.store.open_position_for("AAA", "real")
     assert p["entry"] == 150.5 and p["stop"] < 150.5
-    done = commands.sattim(engine, ["AAA", "160"], now)
-    assert "kapatıldı" in done and engine.store.closed_positions("real")[0]["pnl"] > 0
+    assert p["initial_qty"] == 10 and p["remaining_qty"] == 10 and p["tp1"] > 150.5
+
+    # kısmi satış: kalan adet korunur, stop başa başa çekilir
+    part = commands.sattim(engine, ["AAA", "160", "4"], now)
+    assert "Kalan 6 adet" in part and "başa baş" in part
+    p = engine.store.open_position_for("AAA", "real")
+    assert engine._remaining(p) == 6 and p["stop"] == pytest.approx(150.5)
+    assert len(engine.store.fills(p["id"])) == 1
+
+    assert "Daha fazlası satılamaz" in commands.sattim(engine, ["AAA", "160", "99"], now)
+
+    done = commands.sattim(engine, ["AAA", "170"], now)
+    assert "Pozisyon kapandı" in done
+    closed = engine.store.closed_positions("real")[0]
+    assert closed["pnl"] > 0 and closed["remaining_qty"] == 0
+    # kapanış fiyatı dolumların adet-ağırlıklı ortalaması
+    assert closed["exit_price"] == pytest.approx((160 * 4 + 170 * 6) / 10)
     assert "açık gerçek pozisyon yok" in commands.sattim(engine, ["AAA", "160"], now)
     assert "Kullanım" in commands.aldim(engine, ["AAA", "-5", "10"], now)
 
@@ -290,7 +357,7 @@ def test_aldim_sattim_track_real_position(tmp_path):
 def test_scheduler_runs_each_job_once_and_survives_restart(tmp_path):
     engine, sent = make_engine(tmp_path)
     calls = []
-    engine.scan_intraday = lambda now: calls.append(("scan", now.strftime("%H:%M")))
+    engine.scan_intraday = lambda now, slot="": calls.append(("scan", now.strftime("%H:%M")))
     engine.monitor = lambda now: calls.append(("monitor", now.strftime("%H:%M")))
     engine.close_job = lambda now: calls.append(("close", now.strftime("%H:%M")))
     sch = Scheduler(engine.cfg, engine)
@@ -309,19 +376,37 @@ def test_scheduler_runs_each_job_once_and_survives_restart(tmp_path):
 def test_scheduler_skips_holiday_and_handles_half_day(tmp_path):
     engine, sent = make_engine(tmp_path)
     calls = []
-    engine.scan_intraday = lambda now: calls.append(now)
+    engine.scan_intraday = lambda now, slot="": calls.append(now)
     engine.monitor = lambda now: calls.append(now)
     engine.close_job = lambda now: calls.append(now)
     sch = Scheduler(engine.cfg, engine)
     for hhmm in ("10:30", "12:00", "14:00", "18:45"):
         sch.tick(at(date(2026, 10, 29), hhmm))
     assert calls == []
+    # Yarım gün: resmi kapanış 12:40, kapanış işi 13:25 (12:40 + 45 dk)
     half = date(2026, 10, 28)
-    for hhmm in ("13:15", "13:25"):
+    for hhmm in ("13:00", "13:20"):
         sch.tick(at(half, hhmm))
-    assert calls == []
-    sch.tick(at(half, "13:30"))
+    assert calls == [], "kapanış saatinden önce iş çalışmamalı"
+    sch.tick(at(half, "13:25"))
     assert len(calls) == 1
+    assert session.session_close(half) == session.HALF_DAY_CLOSE == time(12, 40)
+
+
+def test_scheduler_skips_intraday_scans_after_half_day_close(tmp_path):
+    """Yarım günde seans sonrasına düşen sorgular atlanır (12:40 sonrası)."""
+    engine, sent = make_engine(tmp_path)
+    slots = []
+    engine.scan_intraday = lambda now, slot="": slots.append((now.strftime("%H:%M"), slot))
+    engine.monitor = lambda now: None
+    engine.close_job = lambda now: None
+    sch = Scheduler(engine.cfg, engine)
+    half = date(2026, 10, 28)
+    for hhmm in ("10:30", "12:00", "14:00", "16:00", "17:30"):
+        sch.tick(at(half, hhmm))
+    # 10:30 ve 12:00 seans içinde; 14:00 ve sonrası kapanıştan sonra → atlanır
+    assert [t for t, _ in slots] == ["10:30", "12:00"]
+    assert [s for _, s in slots] == ["S1", "S2"]
 
 
 def test_scheduler_retries_close_until_data_arrives(tmp_path):
@@ -342,10 +427,26 @@ def test_scheduler_retries_close_until_data_arrives(tmp_path):
     assert len(tries) == 2
 
 
+def test_sunday_job_is_off_by_default(tmp_path):
+    """SUNDAY_REVIEW=false (varsayılan): Pazar işi hiç çalışmaz."""
+    engine, sent = make_engine(tmp_path)
+    engine.store.add_candidate(symbol="AAA", signal_date=MONDAY.isoformat(), stage="confirmed",
+                               status="active", score=75, breakdown={}, reference=100.0, atr=2.0,
+                               adv=1e7, max_entry=101.0, stop=92.0, qty=10,
+                               valid_until=date(2026, 11, 10).isoformat(), decision=AI_AL,
+                               ai_olasilik=90.0, eminlik=85.0, created_at="x")
+    engine.sunday_job(at(date(2026, 11, 8), "20:00"))
+    assert engine.analyst.calls == [] and sent == []
+    sch = Scheduler(engine.cfg, engine)
+    sch.tick(at(date(2026, 11, 8), "20:00"))
+    assert engine.analyst.calls == []
+
+
 def test_sunday_rereview_can_downgrade_candidate(tmp_path):
-    engine, sent = make_engine(tmp_path, decision=AI_ALMA, paper=False)
+    engine, sent = make_engine(tmp_path, decision=AI_ALMA, paper=False, sunday_review=True)
     cid = engine.store.add_candidate(symbol="AAA", signal_date="2026-11-06", stage="confirmed", status="active", score=75, breakdown={}, reference=100.0,
-                                     atr=2.0, adv=1e7, max_entry=101.0, stop=92.0, qty=10, valid_until="2026-11-10", decision=AI_AL, created_at="x")
+                                     atr=2.0, adv=1e7, max_entry=101.0, stop=92.0, qty=10, valid_until="2026-11-10", decision=AI_AL,
+                                     ai_olasilik=90.0, eminlik=85.0, created_at="x")
     engine.sunday_job(at(date(2026, 11, 8), "20:00"))
     assert engine.store.candidate(cid)["decision"] == AI_ALMA
     assert engine.analyst.calls[0][2] is True
@@ -369,55 +470,98 @@ def test_unauthorized_chat_cannot_trigger_any_handler(tmp_path):
 
 # Claude API, gerçek SDK ve taklit HTTP katmanıyla test edilir
 GOOD = {
-    "karar": "AL", "guven": 72, "ozet": "Güçlü görünüm.", "grafik": {}, "haberler": [{"baslik": "H", "tarih": "2026-10-01", "url": "https://kap.org.tr/1", "etki": "olumlu"},
-                                                                                  {"baslik": "Uydurma", "tarih": "2026-10-02", "url": "https://uydurma.com/x", "etki": "olumlu"}],
-    "temel_gorunum": "", "plan": {"giris_alt": 98, "giris_ust": 100, "stop": 90, "hedef_1": 110, "hedef_2": 120, "tutma_suresi_gun": 30},
-    "karsi_tez": ["Bilanço riski"], "gecersizlik_kosulu": "90 altı", "bekle_kosulu": "", "veri_eksikleri": [],
+    "karar": "AL", "olasilik": 84, "ozet": "Güçlü görünüm.",
+    "gerekce": ["trend yukarı"], "riskler": ["bilanço riski"], "direncler": [110.0],
+    "haberler": [
+        {"baslik": "H", "tarih": "2026-10-01", "url": "https://kap.org.tr/1", "etki": "olumlu"},
+        {"baslik": "Uydurma", "tarih": "2026-10-02", "url": "https://uydurma.com/x", "etki": "olumlu"},
+    ],
+    "veri_eksikleri": [],
+}
+GOOD_EXIT = {
+    "karar": "TUT", "olasilik": 65, "ozet": "Henüz bozulmadı.",
+    "tut_kosulu": "EMA50 üstünde kalırsa", "haberler": [], "veri_eksikleri": [],
 }
 
 
-def api_message(text_blocks, stop="end_turn", results=True, searches=1):
+def api_message(text_blocks, stop="end_turn", results=True, searches=1,
+                input_tokens=1000, output_tokens=500):
     content = []
     if results:
-        content.append({"type": "server_tool_use", "id": "srv_1", "name": "web_search", "input": {"query": "x"}})
+        content.append({"type": "server_tool_use", "id": "srv_1", "name": "web_search",
+                        "input": {"query": "x"}})
         content.append({"type": "web_search_tool_result", "tool_use_id": "srv_1", "content": [
-            {"type": "web_search_result", "url": "https://kap.org.tr/1", "title": "t", "encrypted_content": "e", "page_age": None}]})
+            {"type": "web_search_result", "url": "https://kap.org.tr/1", "title": "t",
+             "encrypted_content": "e", "page_age": None}]})
     content += [{"type": "text", "text": t} for t in text_blocks]
-    return {"id": "msg_1", "type": "message", "role": "assistant", "model": "m", "content": content, "stop_reason": stop, "stop_sequence": None,
-            "usage": {"input_tokens": 1000, "output_tokens": 500, "server_tool_use": {"web_search_requests": searches}}}
+    return {"id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+            "content": content, "stop_reason": stop, "stop_sequence": None,
+            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                      "server_tool_use": {"web_search_requests": searches}}}
 
 
-def analyst_with(tmp_path, responses):
+def analyst_with(tmp_path, responses, **cfg_kw):
     import anthropic
 
     bodies = []
 
     def handler(request):
-        bodies.append(json.loads(request.content))
+        body = json.loads(request.content)
+        bodies.append(body)
+        if request.url.path.endswith("/count_tokens"):
+            return httpx.Response(200, json={"input_tokens": 1500})
         return httpx.Response(200, json=responses.pop(0))
 
-    client = anthropic.Anthropic(api_key="x", max_retries=0, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
-    cfg = BotConfig(db_path=str(tmp_path / "a.db"), ai_enabled=True, ai_monthly_budget_usd=1.0)
-    return Analyst(cfg, Store(cfg.db_path), client), bodies
+    client = anthropic.Anthropic(
+        api_key="x", max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    cfg = BotConfig(db_path=str(tmp_path / "a.db"), ai_enabled=True, **cfg_kw)
+    return Analyst(cfg, Store(cfg.db_path), client, StrategyConfig()), bodies
+
+
+def sent_bodies(bodies):
+    """count_tokens çağrılarını ayıklar; sadece gerçek istekler kalır."""
+    return [b for b in bodies if "max_tokens" in b]
+
+
+def frame_for(price=100.0, n=300):
+    d = uptrend(end=date(2026, 10, 30), n=n)
+    d = d * (price / float(d["close"].iloc[-1]))
+    d["volume"] = 2e6
+    return d
 
 
 def review(analyst, price=100.0, force=False):
-    d = uptrend(end=date(2026, 10, 30), n=300)
-    d = d * (price / float(d["close"].iloc[-1]))
-    d["volume"] = 2e6
-    xu = pd.Series(np.linspace(1000, 1500, 300), index=d.index)
+    d = frame_for(price)
+    xu = pd.Series(np.linspace(1000, 1500, len(d)), index=d.index)
     return analyst.review("AAA", at(MONDAY, "10:30"), price, d, d.tail(10), xu, force=force)
+
+
+def review_exit(analyst, price=100.0, force=False):
+    d = frame_for(price)
+    xu = pd.Series(np.linspace(1000, 1500, len(d)), index=d.index)
+    position = {"entry": price * 1.05, "stop": price * 0.9, "qty": 100, "remaining_qty": 60}
+    return analyst.review_exit("AAA", at(MONDAY, "18:45"), price, d, xu, position, force=force)
 
 
 def test_ai_request_is_blind_and_uses_web_search(tmp_path):
     payload = json.dumps(GOOD, ensure_ascii=False)
     analyst, bodies = analyst_with(tmp_path, [api_message(["Analiz.\n", payload[:30], payload[30:]])])
     r = review(analyst)
-    assert r.decision == AI_AL and r.confidence == 72
-    body = bodies[0]
-    assert body["tools"][0]["type"] == "web_search_20250305" and "kap.org.tr" in body["tools"][0]["allowed_domains"]
-    text = json.dumps(body["messages"], ensure_ascii=False).lower() + body["system"].lower()
-    assert "skor" not in text and "score" not in text
+    assert r.decision == AI_AL and r.olasilik == 84
+    body = sent_bodies(bodies)[0]
+    assert body["tools"][0]["type"] == "web_search_20250305"
+    assert "kap.org.tr" in body["tools"][0]["allowed_domains"]
+    assert body["tools"][0]["max_uses"] == 2
+    assert body["max_tokens"] == 800
+    # SADECE metin bloklari ve sistem promptu taranir; base64 gorsel verisi
+    # tesadufen her dizgiyi icerebilir.
+    text = " ".join(
+        c["text"] for c in body["messages"][0]["content"] if c["type"] == "text"
+    ).lower() + " " + body["system"].lower()
+    for forbidden in ("skor", "score", "eminlik", "puan", "70/100"):
+        assert forbidden not in text, forbidden
     assert sum(1 for c in body["messages"][0]["content"] if c["type"] == "image") == 2
 
 
@@ -428,16 +572,23 @@ def test_ai_drops_unverified_news_urls(tmp_path):
     assert any("doğrulanamadı" in m for m in r.missing)
 
 
-def test_ai_al_without_search_results_becomes_bekle(tmp_path):
+def test_ai_al_without_search_results_becomes_alma(tmp_path):
     analyst, _ = analyst_with(tmp_path, [api_message([json.dumps(GOOD)], results=False, searches=0)])
     r = review(analyst)
-    assert r.decision == AI_BEKLE and "elle" in r.wait_condition
+    assert r.decision == AI_ALMA
+    assert any("haber kontrolü" in m for m in r.missing)
 
 
-def test_ai_invalid_output_retries_then_gives_ai_yok(tmp_path):
+def test_ai_invalid_output_gets_one_toolless_fix_call(tmp_path):
+    """Geçersiz JSON'da ARAÇSIZ tek düzeltme çağrısı; web araması tekrarlanmaz."""
     analyst, bodies = analyst_with(tmp_path, [api_message(["JSON yok"]), api_message(['{"karar": "AL"}'])])
     r = review(analyst)
-    assert r.decision == AI_YOK and len(bodies) == 2
+    assert r.decision == AI_YOK
+    calls = sent_bodies(bodies)
+    assert len(calls) == 2
+    assert "tools" in calls[0] and calls[0]["tools"]
+    assert not calls[1].get("tools")  # düzeltme çağrısı araçsız
+    assert calls[1]["max_tokens"] == 500
 
 
 def test_ai_retry_success_after_invalid_output(tmp_path):
@@ -446,41 +597,107 @@ def test_ai_retry_success_after_invalid_output(tmp_path):
 
 
 def test_ai_pause_turn_continues_conversation(tmp_path):
-    analyst, bodies = analyst_with(tmp_path, [api_message(["Arıyorum"], stop="pause_turn"), api_message([json.dumps(GOOD)])])
+    analyst, bodies = analyst_with(
+        tmp_path, [api_message(["Arıyorum"], stop="pause_turn"), api_message([json.dumps(GOOD)])]
+    )
     r = review(analyst)
-    assert r.decision == AI_AL and bodies[1]["messages"][1]["role"] == "assistant"
+    assert r.decision == AI_AL
+    assert sent_bodies(bodies)[1]["messages"][1]["role"] == "assistant"
+
+
+def test_ai_cost_cap_stops_pause_turn_continuation(tmp_path):
+    """İlk tur bütçenin yarısını geçerse ikinci tur yapılmaz → AI_YOK."""
+    analyst, bodies = analyst_with(
+        tmp_path,
+        [api_message(["Arıyorum"], stop="pause_turn", input_tokens=200_000, output_tokens=50_000)],
+        ai_max_cost_per_review_usd=0.05,
+    )
+    r = review(analyst)
+    assert r.decision == AI_YOK and "maliyet" in r.error
+    assert len(sent_bodies(bodies)) == 1
 
 
 def test_ai_same_day_reuses_review_and_force_refreshes(tmp_path):
     analyst, bodies = analyst_with(tmp_path, [api_message([json.dumps(GOOD)]), api_message([json.dumps(GOOD)])])
     review(analyst)
     second = review(analyst)
-    assert second.reused and len(bodies) == 1
+    assert second.reused and len(sent_bodies(bodies)) == 1
     review(analyst, force=True)
-    assert len(bodies) == 2
+    assert len(sent_bodies(bodies)) == 2
 
 
 def test_ai_budget_stops_calls(tmp_path):
-    analyst, bodies = analyst_with(tmp_path, [])
+    analyst, bodies = analyst_with(tmp_path, [], ai_monthly_budget_usd=1.0)
     analyst.store.add_review("BBB", MONDAY, AI_AL, 50, {}, 0, 0, 0, 5.0, at(MONDAY, "10:00"))
     r = review(analyst)
-    assert r.decision == AI_YOK and "bütçe" in r.error and bodies == []
+    assert r.decision == AI_YOK and "bütçe" in r.error and sent_bodies(bodies) == []
 
 
-def test_ai_records_cost(tmp_path):
+def test_ai_records_haiku_cost_and_metadata(tmp_path):
     analyst, _ = analyst_with(tmp_path, [api_message([json.dumps(GOOD)], searches=2)])
     review(analyst)
-    assert analyst.store.ai_month_cost(MONDAY) == pytest.approx(1000 / 1e6 * 3 + 500 / 1e6 * 15 + 0.02)
+    expected = 1000 / 1e6 * 0.10 + 500 / 1e6 * 0.50 + 2 * 0.01
+    assert analyst.store.ai_month_cost(MONDAY) == pytest.approx(expected)
+    row = analyst.store.review_on("AAA", MONDAY, kind="entry")
+    assert row["model"] == "claude-haiku-5-5" and row["kind"] == "entry"
+    assert row["request_count"] == 1
+
+
+# --- satış incelemesi ---
+
+
+def test_exit_review_returns_sat_tut_and_one_search(tmp_path):
+    analyst, bodies = analyst_with(tmp_path, [api_message([json.dumps(GOOD_EXIT)])])
+    r = review_exit(analyst)
+    assert r.decision == AI_TUT and r.hold_condition
+    body = sent_bodies(bodies)[0]
+    assert body["tools"][0]["max_uses"] == 1  # satışta en fazla 1 arama
+    assert sum(1 for c in body["messages"][0]["content"] if c["type"] == "image") == 1
+    text = " ".join(
+        c["text"] for c in body["messages"][0]["content"] if c["type"] == "text"
+    ).lower()
+    for forbidden in ("skor", "eminlik"):
+        assert forbidden not in text
+
+
+def test_exit_review_failure_defaults_to_sat(tmp_path):
+    analyst, _ = analyst_with(tmp_path, [api_message(["bozuk"]), api_message(["yine bozuk"])])
+    assert review_exit(analyst).decision == AI_SAT
+
+
+def test_exit_review_budget_blocked_defaults_to_sat(tmp_path):
+    analyst, bodies = analyst_with(tmp_path, [], ai_monthly_budget_usd=1.0)
+    analyst.store.add_review("BBB", MONDAY, AI_AL, 50, {}, 0, 0, 0, 5.0, at(MONDAY, "10:00"))
+    r = review_exit(analyst)
+    assert r.decision == AI_SAT and sent_bodies(bodies) == []
+
+
+def test_entry_and_exit_reviews_are_tracked_separately(tmp_path):
+    analyst, bodies = analyst_with(
+        tmp_path, [api_message([json.dumps(GOOD)]), api_message([json.dumps(GOOD_EXIT)])]
+    )
+    review(analyst)
+    review_exit(analyst)
+    assert len(sent_bodies(bodies)) == 2  # aynı gün ama farklı tür
+    assert analyst.store.review_on("AAA", MONDAY, kind="entry")["decision"] == AI_AL
+    assert analyst.store.review_on("AAA", MONDAY, kind="exit")["decision"] == AI_TUT
 
 
 @pytest.mark.parametrize("change", [
-    {"karar": "BELKI"}, {"guven": 200}, {"ozet": ""}, {"karsi_tez": []},
-    {"plan": {"giris_alt": 98, "giris_ust": 100, "stop": 99, "hedef_1": 110, "hedef_2": 120}},
-    {"plan": {"giris_alt": 200, "giris_ust": 210, "stop": 190, "hedef_1": 220, "hedef_2": 230}},
+    {"karar": "BELKI"}, {"karar": "BEKLE"}, {"olasilik": 200}, {"olasilik": "yuksek"},
+    {"ozet": ""}, {"riskler": []}, {"olasilik": 40},
 ])
-def test_validate_rejects_bad_payload(change):
+def test_validate_entry_rejects_bad_payload(change):
     with pytest.raises(ValueError):
-        validate_payload({**GOOD, **change}, 100.0)
+        validate_entry({**GOOD, **change})
+
+
+@pytest.mark.parametrize("change", [
+    {"karar": "AL"}, {"olasilik": -1}, {"ozet": ""}, {"tut_kosulu": ""},
+])
+def test_validate_exit_rejects_bad_payload(change):
+    with pytest.raises(ValueError):
+        validate_exit({**GOOD_EXIT, **change})
 
 
 def test_extract_json_picks_decision_object():

@@ -31,10 +31,42 @@ CREATE TABLE IF NOT EXISTS ai_reviews (
     searches INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_reviews ON ai_reviews(symbol, review_date);
+CREATE TABLE IF NOT EXISTS position_fills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, position_id INTEGER NOT NULL, kind TEXT NOT NULL,
+    price REAL NOT NULL, qty INTEGER NOT NULL, pnl REAL NOT NULL, filled_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fills_position ON position_fills(position_id);
 CREATE TABLE IF NOT EXISTS job_runs (job TEXT PRIMARY KEY, finished_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS equity (day TEXT NOT NULL, mode TEXT NOT NULL, equity REAL NOT NULL, xu100 REAL, PRIMARY KEY (day, mode));
 """
+
+
+#: Eski veritabanlarina eklenecek sutunlar. Mevcut tablolar ve veriler silinmez.
+MIGRATIONS = {
+    "positions": [
+        ("initial_qty", "INTEGER"),
+        ("remaining_qty", "INTEGER"),
+        ("tp1", "REAL"), ("tp2", "REAL"), ("tp3", "REAL"),
+        ("reached_level", "TEXT NOT NULL DEFAULT ''"),
+        ("exit_model", "TEXT NOT NULL DEFAULT 'atr_staged'"),
+        ("tp1_alerted", "INTEGER NOT NULL DEFAULT 0"),
+        ("tp2_alerted", "INTEGER NOT NULL DEFAULT 0"),
+        ("tp3_alerted", "INTEGER NOT NULL DEFAULT 0"),
+        ("soft_exit_hold_until", "TEXT"),
+        ("soft_exit_asked", "INTEGER NOT NULL DEFAULT 0"),
+    ],
+    "candidates": [
+        ("scan_slot", "TEXT NOT NULL DEFAULT ''"),
+        ("ai_olasilik", "REAL"),
+        ("eminlik", "REAL"),
+    ],
+    "ai_reviews": [
+        ("model", "TEXT NOT NULL DEFAULT ''"),
+        ("request_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("kind", "TEXT NOT NULL DEFAULT 'entry'"),
+    ],
+}
 
 
 class Store:
@@ -45,7 +77,23 @@ class Store:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        self._migrate()
         self._db.commit()
+
+    def _migrate(self) -> None:
+        """Eksik sutunlari ekler. SQLite'ta ADD COLUMN IF NOT EXISTS yok."""
+        for table, columns in MIGRATIONS.items():
+            have = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name not in have:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        # eski satirlarda kalan adet bos kalmasin
+        self._db.execute(
+            "UPDATE positions SET initial_qty = qty WHERE initial_qty IS NULL"
+        )
+        self._db.execute(
+            "UPDATE positions SET remaining_qty = qty WHERE remaining_qty IS NULL"
+        )
 
     def _run(self, sql: str, args: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -127,7 +175,50 @@ class Store:
         self._run(f"UPDATE positions SET {sets} WHERE id = ?", [*f.values(), pid])
 
     def close_position(self, pid: int, price: float, moment: datetime, reason: str, pnl: float) -> None:
-        self.update_position(pid, status="closed", exit_price=price, closed_at=moment.isoformat(), reason=reason, pnl=pnl)
+        self.update_position(pid, status="closed", exit_price=price, closed_at=moment.isoformat(),
+                             reason=reason, pnl=pnl, remaining_qty=0)
+
+    def add_fill(self, pid: int, kind: str, price: float, qty: int, pnl: float, moment: datetime) -> None:
+        """Her kismi satis ayri satir (spesifikasyon Bolum 12)."""
+        self._run(
+            "INSERT INTO position_fills (position_id, kind, price, qty, pnl, filled_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (pid, kind, price, qty, pnl, moment.isoformat()),
+        )
+
+    def fills(self, pid: int) -> List[Dict[str, Any]]:
+        return self._all("SELECT * FROM position_fills WHERE position_id = ? ORDER BY id", (pid,))
+
+    def sell_part(self, pid: int, kind: str, price: float, qty: int, pnl: float,
+                  moment: datetime, stop: Optional[float] = None,
+                  reached: Optional[str] = None) -> int:
+        """
+        Kismi satis kaydeder ve kalan adedi gunceller. Kalan 0 olursa pozisyon
+        kapanir; kapanis fiyati tum dolumlarin adet-agirlikli ortalamasidir.
+        """
+        row = self._one("SELECT * FROM positions WHERE id = ?", (pid,))
+        if row is None:
+            return 0
+        remaining = int(row["remaining_qty"] if row["remaining_qty"] is not None else row["qty"])
+        qty = min(qty, remaining)
+        if qty <= 0:
+            return 0
+        self.add_fill(pid, kind, price, qty, pnl, moment)
+        remaining -= qty
+        fields: Dict[str, Any] = {"remaining_qty": remaining}
+        if stop is not None:
+            fields["stop"] = stop
+        if reached is not None:
+            fields["reached_level"] = reached
+        self.update_position(pid, **fields)
+        if remaining <= 0:
+            rows = self.fills(pid)
+            sold = sum(r["qty"] for r in rows) or 1
+            avg = sum(r["price"] * r["qty"] for r in rows) / sold
+            total = sum(r["pnl"] for r in rows)
+            self.update_position(pid, status="closed", exit_price=avg,
+                                 closed_at=moment.isoformat(), reason=kind, pnl=total)
+        return qty
 
     def open_positions(self, mode: Optional[str] = None) -> List[Dict[str, Any]]:
         if mode:
@@ -147,15 +238,23 @@ class Store:
 
     # AI
     def add_review(self, symbol: str, day: date, decision: str, confidence: Optional[float], payload: Dict[str, Any],
-                   input_tokens: int, output_tokens: int, searches: int, cost: float, now: datetime) -> None:
+                   input_tokens: int, output_tokens: int, searches: int, cost: float, now: datetime,
+                   model: str = "", request_count: int = 0, kind: str = "entry") -> None:
         self._run(
-            "INSERT INTO ai_reviews (symbol, review_date, decision, confidence, payload, input_tokens, output_tokens, searches, cost_usd, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (symbol, day.isoformat(), decision, confidence, json.dumps(payload, ensure_ascii=False), input_tokens, output_tokens, searches, cost, now.isoformat()),
+            "INSERT INTO ai_reviews (symbol, review_date, decision, confidence, payload, input_tokens,"
+            " output_tokens, searches, cost_usd, created_at, model, request_count, kind)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (symbol, day.isoformat(), decision, confidence, json.dumps(payload, ensure_ascii=False),
+             input_tokens, output_tokens, searches, cost, now.isoformat(), model, request_count, kind),
         )
 
-    def review_on(self, symbol: str, day: date) -> Optional[Dict[str, Any]]:
-        row = self._one("SELECT * FROM ai_reviews WHERE symbol = ? AND review_date = ? ORDER BY id DESC LIMIT 1", (symbol, day.isoformat()))
+    def review_on(self, symbol: str, day: date, kind: str = "entry") -> Optional[Dict[str, Any]]:
+        """Aynı hisse icin aynı gun tek inceleme (alim ve satis ayri sayilir)."""
+        row = self._one(
+            "SELECT * FROM ai_reviews WHERE symbol = ? AND review_date = ? AND kind = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (symbol, day.isoformat(), kind),
+        )
         if row:
             row["payload"] = json.loads(row["payload"])
         return row

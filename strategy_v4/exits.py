@@ -35,6 +35,8 @@ class PositionState:
     tp3: float
     reached: str = ""  # "" | "tp1" | "tp2" | "tp3"
     closed_reason: str = ""
+    top_price: float = 0.0  # girişten beri görülen en yüksek fiyat
+    risk: float = 0.0  # ilk risk (giriş − ilk stop); stop taşınsa da sabit kalır
 
     @property
     def is_open(self) -> bool:
@@ -69,12 +71,62 @@ def levels(entry: float, cfg: Optional[StrategyConfig] = None) -> Dict[str, floa
     }
 
 
-def open_state(entry: float, qty: int, cfg: Optional[StrategyConfig] = None) -> PositionState:
-    """Girişten sonraki başlangıç durumu."""
-    lv = levels(entry, cfg)
+def r_multiples(cfg: Optional[StrategyConfig] = None) -> tuple:
+    """
+    TP'lerin R katları, sabit yüzde ayarlarından türetilir.
+
+    Varsayılanla (stop %4; TP %6/%10/%15) → (1,5 / 2,5 / 3,75). Yani ödül-risk
+    geometrisi tek yerde tanımlı; `exit_model` sadece 1R'nin NE OLDUĞUNU değiştirir.
+    """
+    cfg = cfg or StrategyConfig()
+    return (cfg.tp1_pct / cfg.stop_pct, cfg.tp2_pct / cfg.stop_pct, cfg.tp3_pct / cfg.stop_pct)
+
+
+def levels_atr(entry: float, atr: float, cfg: Optional[StrategyConfig] = None) -> Dict[str, float]:
+    """
+    Oynaklığa göre ölçeklenmiş seviyeler: 1R = `stop_atr` × ATR14.
+
+    TP'ler `r_multiples` ile aynı R katlarında durur, yani yüzdeler hisseye göre
+    değişir ama R geometrisi sabit kalır. `exit_model="atr_staged"` içindir.
+    """
+    cfg = cfg or StrategyConfig()
+    risk = cfg.stop_atr * atr
+    m1, m2, m3 = r_multiples(cfg)
+    return {
+        "stop": round(entry - risk, PRICE_DECIMALS),
+        "tp1": round(entry + m1 * risk, PRICE_DECIMALS),
+        "tp2": round(entry + m2 * risk, PRICE_DECIMALS),
+        "tp3": round(entry + m3 * risk, PRICE_DECIMALS),
+    }
+
+
+def levels_for(entry: float, atr: float, cfg: Optional[StrategyConfig] = None) -> Dict[str, float]:
+    """
+    `exit_model`'e göre seviyeler:
+
+    - `"fixed_pct"`  → sabit yüzde (stop −%4, TP +%6/+%10/+%15)
+    - `"atr_staged"` → 1R = k×ATR, TP'ler aynı R katlarında
+    - `"atr"`        → eski v4: k×ATR stop, TP YOK (çıkışı skor yönetir)
+    """
+    cfg = cfg or StrategyConfig()
+    if cfg.exit_model == "atr":
+        inf = float("inf")
+        return {"stop": round(entry - cfg.stop_atr * atr, PRICE_DECIMALS),
+                "tp1": inf, "tp2": inf, "tp3": inf}
+    if cfg.exit_model == "atr_staged":
+        return levels_atr(entry, atr, cfg)
+    return levels(entry, cfg)
+
+
+def open_state(
+    entry: float, qty: int, cfg: Optional[StrategyConfig] = None, atr: float = 0.0
+) -> PositionState:
+    """Girişten sonraki başlangıç durumu. ATR tabanlı modlarda `atr` gerekir."""
+    lv = levels_for(entry, atr, cfg) if (cfg and cfg.exit_model != "fixed_pct") else levels(entry, cfg)
     return PositionState(
         entry=entry, qty=int(qty), remaining=int(qty),
         stop=lv["stop"], tp1=lv["tp1"], tp2=lv["tp2"], tp3=lv["tp3"],
+        top_price=entry, risk=entry - lv["stop"],
     )
 
 
@@ -118,6 +170,7 @@ def step(
     events: List[ExitEvent] = []
     if not s.is_open:
         return s, events
+    s.top_price = max(s.top_price or s.entry, bar_high)
 
     # Gap aşağı: açılış stopta veya altında → açılıştan tamamı
     if bar_open <= s.stop:
@@ -180,14 +233,21 @@ def time_exit_due(
     """
     Zaman stopu gerekçesi veya None.
 
-    - `tp1_horizon_sessions` (10) içinde TP1 gelmediyse → "time"
     - `max_hold_sessions` (30) dolduysa → "max_hold"
+    - `tp1_horizon_sessions` (10) geçtiyse:
+        `time_stop_uses_r=False` → TP1 hiç gelmediyse "time"
+        `time_stop_uses_r=True`  → en yüksek fiyat `time_stop_r` R kadar
+                                   ilerlemediyse "time" (oynaklığa göre ölçekli)
     """
     cfg = cfg or StrategyConfig()
     if not state.is_open:
         return None
     if sessions_held >= cfg.max_hold_sessions:
         return "max_hold"
-    if not state.reached and sessions_held >= cfg.tp1_horizon_sessions:
-        return "time"
-    return None
+    if sessions_held < cfg.tp1_horizon_sessions:
+        return None
+    if cfg.time_stop_uses_r:
+        risk = state.risk or (state.entry - state.stop)
+        advance = (max(state.top_price, state.entry) - state.entry) / risk if risk > 0 else 0.0
+        return "time" if advance < cfg.time_stop_r else None
+    return "time" if not state.reached else None

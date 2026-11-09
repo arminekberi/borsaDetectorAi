@@ -30,10 +30,13 @@ BIST_HALF_DAYS = {
     "2026-10-28",
 }
 
-# Seans saatleri (Europe/Istanbul) — BIST resmi: 09:40–18:10
+# Seans saatleri (Europe/Istanbul). Kaynak: Borsa Istanbul Pay Piyasasi Islem
+# Saatleri Cizelgeleri. Tam gun: acilis 09:40-09:55, surekli islem 10:00-18:00,
+# kapanis 18:00-18:05, kapanis fiyatindan islemler 18:07-18:10.
+# Yarim gun: surekli islem 10:00-12:30, kapanis 12:30-12:35, son islem 12:38-12:40.
 REGULAR_SESSION_START = (9, 40)
 REGULAR_SESSION_END = (18, 10)
-HALF_DAY_SESSION_END = (13, 0)
+HALF_DAY_SESSION_END = (12, 40)
 
 # 4H setup olusum saatleri (Istanbul): 10:00, 14:00, 18:00 (yuvarlak)
 FOUR_H_SIGNAL_TIMES = ((10, 0), (14, 0), (18, 0))

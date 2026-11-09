@@ -188,7 +188,9 @@ def test_gap_through_stop_fills_at_open_not_stop(force_signal):
 
 
 def test_stop_never_moves_down(force_signal):
-    cfg = StrategyConfig(scan_weekday=None, stop_atr=2.0, trail_atr=3.0, exit_score=None)
+    # iz suren stop eski ATR yolunda; kademeli TP modunda TP'ler devreye girer
+    cfg = StrategyConfig(scan_weekday=None, stop_atr=2.0, trail_atr=3.0,
+                         exit_score=None, exit_model="atr")
     rows = [[100, 101, 99, 100], [100, 103, 99.5, 102], [102, 112, 101.5, 111], [111, 112, 104, 105.5], [105.5, 106, 104.9, 105], [105, 105.2, 102.5, 103]]
     _, p = forced_panel(rows, cfg, atr=2.0)
     force_signal(len(rows))
@@ -280,11 +282,8 @@ def test_score_exit_happens_next_open(force_signal, monkeypatch):
 
 
 def test_max_position_cap_limits_each_holding(force_signal):
-    # Spesifikasyon Bölüm 8 ile varsayılan max_position_pct 0,125 → 0,20 oldu.
-    # Pozisyon sınırı hâlâ bağlayıcı: 0,20 × 100.000 / 100 = 200 adet
-    # (risk sınırı 0,01 × 100.000 / 4 = 250 adet verirdi).
     cfg = StrategyConfig(scan_weekday=None, exit_score=None)
     rows = [[100, 101, 99, 100], [100, 101, 99.5, 100], [100, 101, 99.5, 100]]
     _, p = forced_panel(rows, cfg, atr=1.0)
     force_signal(len(rows))
-    assert run_backtest(p, cfg, "2024-01-01", "2024-01-03").trades.iloc[0]["qty"] == 200
+    assert run_backtest(p, cfg, "2024-01-01", "2024-01-03").trades.iloc[0]["qty"] == 125

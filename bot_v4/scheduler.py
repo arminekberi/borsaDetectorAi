@@ -53,6 +53,8 @@ class Scheduler:
         if not session.calendar_known(day):
             self._warn(f"calendar:{day.year}", f"⚠️ {day.year} BIST tatil takvimi eklenmemiş. config/bist_calendar.py güncellenmeli.")
         if day.weekday() == 6:
+            if not self.cfg.sunday_review:
+                return  # SUNDAY_REVIEW=false (varsayilan): Pazar isi hic calismaz
             due = datetime.combine(day, parse_time(self.cfg.sunday_time), tzinfo=now.tzinfo)
             job = f"sunday:{day}"
             if due <= now <= due + timedelta(hours=3) and not self.store.job_done(job):
@@ -61,12 +63,14 @@ class Scheduler:
         if not session.is_trading_day(day):
             return
         close_at = session.session_close(day)
-        for text in self.cfg.scan_times:
+        for n, text in enumerate(self.cfg.scan_times, start=1):
             at = parse_time(text)
             due = datetime.combine(day, at, tzinfo=now.tzinfo)
             job = f"scan:{day}:{text}"
+            # Yarim gunde seans sonrasina dusen sorgu atlanir
             if at < close_at and due <= now <= due + SCAN_WINDOW and not self.store.job_done(job):
-                self._run(job, now, self.engine.scan_intraday)
+                slot = f"S{n}"
+                self._run(job, now, lambda moment, s=slot: self.engine.scan_intraday(moment, s))
 
         monitor_end = (datetime.combine(day, close_at) + timedelta(minutes=10)).time()
         if session.SESSION_OPEN <= now.time() <= monitor_end:

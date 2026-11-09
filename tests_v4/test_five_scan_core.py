@@ -8,7 +8,15 @@ import pandas as pd
 import pytest
 
 from strategy_v4.config import StrategyConfig
-from strategy_v4.exits import LEVELS, levels, open_state, step, time_exit_due
+from strategy_v4.exits import (
+    LEVELS,
+    levels,
+    levels_for,
+    open_state,
+    r_multiples,
+    step,
+    time_exit_due,
+)
 from strategy_v4.features import compute_features, compute_score
 from strategy_v4.intraday import (
     HALF_DAY_CLOSE,
@@ -20,7 +28,11 @@ from strategy_v4.intraday import (
 from strategy_v4.live import evaluate, evaluate_at
 from strategy_v4.sizing import entry_limit, position_plan, stop_price
 
-CFG = StrategyConfig(min_adv_try=1e6)
+# Bu dosyadaki testler SABİT YÜZDE çıkış modelini ve spesifikasyon Bölüm 8
+# boyutlandırmasını ölçer. Varsayılanlar v4'e döndüğü için burada açıkça sabitlenir.
+CFG = StrategyConfig(min_adv_try=1e6, exit_model="fixed_pct",
+                    risk_per_trade=0.01, max_position_pct=0.20,
+                    max_positions=5, max_per_sector=2)
 
 
 def daily_frame(n=340, seed=5, drift=0.0009, vol=0.015, end="2026-11-06"):
@@ -393,3 +405,49 @@ def test_position_plan_risk_binds_with_a_wide_stop():
     assert plan["qty"] == 50  # 1.000 TL risk / 20 TL
     assert plan["risk_pct"] == pytest.approx(0.01)
     assert plan["binding"] == "risk"
+
+
+# --- 5. Oynaklığa göre ölçekli çıkış modeli (atr_staged) ----------------------
+
+
+def test_atr_staged_keeps_r_multiples_constant_across_volatility():
+    """1R = k×ATR; TP'ler her hissede AYNI R katında durur, yüzdeler değişir."""
+    cfg = replace(CFG, exit_model="atr_staged", stop_atr=2.5)
+    assert r_multiples(cfg) == (1.5, 2.5, 3.75)
+    for price, atr in ((73.15, 2.926), (331.75, 16.753), (1.87, 0.2238)):
+        lv = levels_for(price, atr, cfg)
+        risk = price - lv["stop"]
+        assert risk == pytest.approx(2.5 * atr)
+        assert (lv["tp1"] - price) / risk == pytest.approx(1.5, abs=1e-3)
+        assert (lv["tp2"] - price) / risk == pytest.approx(2.5, abs=1e-3)
+        assert (lv["tp3"] - price) / risk == pytest.approx(3.75, abs=1e-3)
+
+
+def test_atr_staged_stop_percentage_scales_with_volatility():
+    cfg = replace(CFG, exit_model="atr_staged", stop_atr=2.5)
+    calm = levels_for(100.0, 4.0, cfg)      # ATR/fiyat %4
+    wild = levels_for(100.0, 12.0, cfg)     # ATR/fiyat %12
+    assert calm["stop"] == pytest.approx(90.0)   # −%10
+    assert wild["stop"] == pytest.approx(70.0)   # −%30
+
+
+def test_atr_staged_equalises_real_risk_unlike_fixed_pct():
+    """Sabit yüzdede pozisyon sınırı bağlayıcı; ATR'de risk sınırı bağlayıcı olur."""
+    equity = 100_000.0
+    fixed, staged = CFG, replace(CFG, exit_model="atr_staged", stop_atr=2.5)
+    for price, atr in ((73.15, 2.926), (1.87, 0.2238)):
+        f = position_plan(equity, price, stop_price(price, atr, fixed), 1e12, equity, fixed)
+        s = position_plan(equity, price, stop_price(price, atr, staged), 1e12, equity, staged)
+        assert f["binding"] == "pozisyon" and f["risk_pct"] == pytest.approx(0.008, abs=1e-4)
+        assert s["binding"] == "risk" and s["risk_pct"] == pytest.approx(0.01, abs=5e-4)
+    # oynak hissede ATR modeli belirgin daha küçük pozisyon açar
+    calm = position_plan(equity, 73.15, stop_price(73.15, 2.926, staged), 1e12, equity, staged)
+    wild = position_plan(equity, 1.87, stop_price(1.87, 0.2238, staged), 1e12, equity, staged)
+    assert calm["qty"] * 73.15 / equity > wild["qty"] * 1.87 / equity * 2
+
+
+def test_levels_for_dispatches_on_exit_model():
+    assert levels_for(100.0, 5.0, CFG) == levels(100.0, CFG)
+    old = levels_for(100.0, 2.0, replace(CFG, exit_model="atr"))
+    assert old["stop"] == pytest.approx(92.0)
+    assert old["tp1"] == float("inf")  # eski v4'te TP yok

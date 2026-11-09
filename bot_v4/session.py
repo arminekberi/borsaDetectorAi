@@ -8,7 +8,7 @@ from config.bist_calendar import BIST_HALF_DAYS, BIST_HOLIDAYS, KNOWN_CALENDAR_Y
 
 SESSION_OPEN = time(10, 0)
 SESSION_CLOSE = time(18, 10)
-HALF_DAY_CLOSE = time(13, 0)
+HALF_DAY_CLOSE = time(12, 40)  # resmi cizelge; eskiden 13:00 yaziliydi
 
 
 def is_trading_day(day: date) -> bool:

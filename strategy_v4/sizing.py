@@ -26,8 +26,14 @@ def entry_limit(reference: float, atr: float, cfg: StrategyConfig) -> float:
 
 
 def stop_price(entry: float, atr: float, cfg: StrategyConfig) -> float:
-    """`exit_model`'e göre stop: sabit yüzde → giriş × (1 − stop_pct)."""
-    if cfg.exit_model == "atr":
+    """
+    `exit_model`'e göre stop.
+
+    - "fixed_pct"  → giriş × (1 − stop_pct)
+    - "atr_staged" → giriş − stop_atr × ATR (oynaklığa göre ölçekli)
+    - "atr"        → giriş − stop_atr × ATR (eski v4)
+    """
+    if cfg.exit_model in ("atr", "atr_staged"):
         return initial_stop(entry, atr, cfg)
     return entry - entry * cfg.stop_pct
 

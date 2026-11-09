@@ -54,16 +54,22 @@ class StrategyConfig:
     max_new_entries_per_day: int = 2
     scan_weekday: Optional[int] = 4  # None: her gün; 4: haftanın son işlem günü
 
-    # Risk (spesifikasyon Bölüm 8)
-    risk_per_trade: float = 0.01  # Stoplanırsa portföyden en fazla kayıp
-    max_position_pct: float = 0.20
-    max_positions: int = 5
-    max_per_sector: int = 2
+    # Risk — v4 orijinal değerleri. Prompt 3 ölçümünde spesifikasyonun
+    # %1/%20/5/2 setinden daha iyi sonuç verdi, o yüzden geri alındı.
+    risk_per_trade: float = 0.025  # Stoplanırsa portföyden en fazla kayıp
+    max_position_pct: float = 0.125
+    max_positions: int = 8
+    max_per_sector: int = 3
     monthly_brake: float = -0.06
     max_pct_of_adv: float = 0.05
 
-    # Çıkış modeli: "fixed_pct" (sabit yüzde, canlı sistem) | "atr" (eski v4, karşılaştırma için)
-    exit_model: str = "fixed_pct"
+    # Çıkış modeli:
+    #   "fixed_pct"  sabit yüzde (stop −%4, TP +%6/+%10/+%15) — spesifikasyon varsayılanı
+    #   "atr_staged" 1R = stop_atr × ATR14, TP'ler aynı R katlarında (oynaklığa göre ölçekli)
+    #   "atr"        eski v4: stop_atr × ATR14 stop, TP yok, çıkışı skor yönetir
+    #   Ölçüm (2025-05→2026-11, günlük tarama + haftalık çıkış):
+    #   atr (TP yok) Evren B +12,8% | atr_staged k=4 +14,3%, düşüş −12,1% → −9,3%
+    exit_model: str = "atr_staged"
 
     # Sabit yüzde çıkışları (spesifikasyon Bölüm 8). Stop ve TP'ler kullanıcı
     # kararıdır; backtest sonucuna göre değiştirilmez.
@@ -77,6 +83,13 @@ class StrategyConfig:
     move_stop_after_tp2: str = "tp1"  # TP2 sonrası stop TP1 seviyesine
     tp1_horizon_sessions: int = 10  # bu sürede TP1 gelmezse zaman stopu
     max_hold_sessions: int = 30
+    # Yumuşak çıkış (spesifikasyon 9.3): kapanış < EMA50 kuralı. Eski v4'te kapalıydı.
+    soft_exit_ema50: bool = True
+    # Yumuşak çıkışta AI TUT derse en fazla kaç seans geçerli
+    soft_exit_max_hold: int = 2
+    # Zaman stopu ölçütü: False → "TP1 gelmedi"; True → "en yüksek fiyat time_stop_r R
+    # kadar ilerlemedi" (oynaklığa göre kendini ayarlar).
+    time_stop_uses_r: bool = False
 
     # Eski v4 ATR çıkışı (exit_model="atr" ile seçilir)
     stop_atr: float = 4.0

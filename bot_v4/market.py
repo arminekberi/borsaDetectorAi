@@ -27,6 +27,14 @@ class StaleData(RuntimeError):
 
 @dataclass
 class IntradayBar:
+    """
+    Gunun 15m barlarindan kurulan ozet.
+
+    `recent_*` alanlari son takip penceresini (son iki 15m bar) tanimlar;
+    `Engine._check_position` stop/TP kontrolunu bu araligla yapar, boylece iki
+    takip turu arasinda olusan hareket kacmaz.
+    """
+
     date: date
     open: float
     high: float
@@ -34,9 +42,12 @@ class IntradayBar:
     close: float
     volume: float
     recent_low: float
+    recent_high: float = 0.0
+    recent_open: float = 0.0
 
     def as_dict(self) -> dict:
-        return {"date": self.date, "open": self.open, "high": self.high, "low": self.low, "close": self.close, "volume": self.volume}
+        return {"date": self.date, "open": self.open, "high": self.high, "low": self.low,
+                "close": self.close, "volume": self.volume}
 
 
 def _normal_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -139,9 +150,13 @@ class YahooMarket:
         today = data[data.index.normalize() == pd.Timestamp(as_of)]
         if today.empty:
             return None
+        window = today.tail(2)
         return IntradayBar(
-            date=as_of, open=float(today["open"].iloc[0]), high=float(today["high"].max()), low=float(today["low"].min()),
-            close=float(today["close"].iloc[-1]), volume=float(today["volume"].sum()), recent_low=float(today["low"].tail(2).min()),
+            date=as_of, open=float(today["open"].iloc[0]), high=float(today["high"].max()),
+            low=float(today["low"].min()), close=float(today["close"].iloc[-1]),
+            volume=float(today["volume"].sum()),
+            recent_low=float(window["low"].min()), recent_high=float(window["high"].max()),
+            recent_open=float(window["open"].iloc[0]),
         )
 
     def intraday(self, symbol: str, as_of: date) -> Optional[IntradayBar]:

@@ -12,13 +12,14 @@ Kararlar yalnızca gün sonu verisiyle verilir ve en erken ertesi gün uygulanı
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 from strategy_v4.config import StrategyConfig
+from strategy_v4.exits import PositionState, levels_for, step as exit_step
 from strategy_v4.features import compute_features, compute_score, market_regime
 from strategy_v4.sizing import initial_stop, max_entry_price, position_quantity
 
@@ -76,6 +77,16 @@ class Position:
     stop: float
     risk_per_share: float
     top_close: float
+    # Kademeli çıkış (`exit_model="atr_staged"`) alanları; "atr" modunda kullanılmaz.
+    remaining: int = 0
+    reached: str = ""
+    tp1: float = float("inf")
+    tp2: float = float("inf")
+    tp3: float = float("inf")
+    sold_qty: int = 0
+    sold_value: float = 0.0
+    realized: float = 0.0
+    levels: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -92,6 +103,153 @@ def _locked_down(o, h, l, c, prev) -> bool:
 
 def _locked_up(o, h, l, c, prev) -> bool:
     return prev > 0 and h <= l * 1.0005 and c / prev - 1.0 >= 0.09
+
+
+@dataclass
+class Holding:
+    """Kısmi satışı destekleyen açık pozisyon (gün içi backtest ve canlı ortak şekli)."""
+
+    symbol: str
+    entry: float
+    qty: int  # başlangıç adedi
+    remaining: int
+    risk_per_share: float
+    entry_day: pd.Timestamp
+    fill_key: int = -1  # dolum barının sıra numarası; o barda çıkış kontrolü yapılmaz
+    meta: Dict[str, object] = field(default_factory=dict)
+
+
+class Portfolio:
+    """
+    Nakit, maliyet, kısmi satış ve limit muhasebesi.
+
+    Formüller `run_backtest` ile aynıdır (maliyet taraf başına `cost_per_side`,
+    stop dolumlarına `stop_slippage`); `test_portfolio_matches_run_backtest`
+    ikisinin aynı sonucu verdiğini doğrular. `run_backtest` geriye dönük
+    uyumluluk için kendi satır içi muhasebesini korur.
+    """
+
+    def __init__(self, cfg: StrategyConfig, sectors: Optional[Dict[str, str]] = None):
+        self.cfg = cfg
+        self.sectors = sectors or {}
+        self.cash = cfg.initial_capital
+        self.holdings: Dict[str, Holding] = {}
+        self.fills: List[dict] = []
+        self.trades: List[dict] = []
+        self.costs = 0.0
+        self.filled_today = 0
+        self._month: Optional[tuple] = None
+        self._month_start_equity = cfg.initial_capital
+
+    # --- değerleme ---
+    def equity(self, prices: Dict[str, float]) -> float:
+        value = self.cash
+        for sym, h in self.holdings.items():
+            value += h.remaining * prices.get(sym, h.entry)
+        return value
+
+    def invested_fraction(self, prices: Dict[str, float]) -> float:
+        total = self.equity(prices)
+        if total <= 0:
+            return 0.0
+        held = sum(h.remaining * prices.get(s, h.entry) for s, h in self.holdings.items())
+        return held / total
+
+    # --- gün döngüsü ---
+    def start_day(self, day: pd.Timestamp, prices: Dict[str, float]) -> None:
+        self.filled_today = 0
+        key = (day.year, day.month)
+        if key != self._month:
+            self._month = key
+            self._month_start_equity = self.equity(prices)
+
+    def brake_on(self, prices: Dict[str, float]) -> bool:
+        """Aylık kayıp freni: ay başından beri düşüş `monthly_brake`'i aştıysa yeni alım yok."""
+        if self._month_start_equity <= 0:
+            return False
+        return self.equity(prices) / self._month_start_equity - 1.0 <= self.cfg.monthly_brake
+
+    def block_reason(self, symbol: str, prices: Dict[str, float]) -> Optional[str]:
+        """Yeni giriş engelleri; sırası `run_backtest` ile aynı."""
+        if self.brake_on(prices):
+            return "aylık kayıp freni"
+        if len(self.holdings) >= self.cfg.max_positions:
+            return "portföy dolu"
+        if self.filled_today >= self.cfg.max_new_entries_per_day:
+            return "günlük giriş sınırı"
+        sector = self.sectors.get(symbol, "Unknown")
+        if sector != "Unknown":
+            same = sum(1 for s in self.holdings if self.sectors.get(s) == sector)
+            if same >= self.cfg.max_per_sector:
+                return "sektör sınırı"
+        return None
+
+    # --- işlemler ---
+    def buy(
+        self, symbol: str, price: float, qty: int, risk_per_share: float,
+        day: pd.Timestamp, fill_key: int = -1, meta: Optional[dict] = None,
+    ) -> bool:
+        if qty <= 0 or symbol in self.holdings:
+            return False
+        gross = qty * price
+        cost = gross * self.cfg.cost_per_side
+        if gross + cost > self.cash + 1e-9:
+            return False
+        self.cash -= gross + cost
+        self.costs += cost
+        self.holdings[symbol] = Holding(
+            symbol=symbol, entry=price, qty=qty, remaining=qty,
+            risk_per_share=risk_per_share, entry_day=day, fill_key=fill_key,
+            meta=dict(meta or {}),
+        )
+        self.filled_today += 1
+        return True
+
+    def sell(
+        self, symbol: str, price: float, qty: int, day: pd.Timestamp,
+        reason: str, stop_fill: bool = False,
+    ) -> float:
+        """Kısmi veya tam satış. Stop dolumlarına `stop_slippage` uygulanır."""
+        h = self.holdings[symbol]
+        qty = min(qty, h.remaining)
+        if qty <= 0:
+            return 0.0
+        fill = price * (1.0 - self.cfg.stop_slippage) if stop_fill else price
+        cost = qty * fill * self.cfg.cost_per_side
+        self.cash += qty * fill - cost
+        self.costs += cost
+        entry_cost = qty * h.entry * self.cfg.cost_per_side
+        pnl = (fill - h.entry) * qty - cost - entry_cost
+        h.remaining -= qty
+        self.fills.append({
+            "symbol": symbol, "reason": reason, "price": fill, "qty": qty,
+            "pnl": pnl, "day": day, "entry": h.entry,
+        })
+        if h.remaining <= 0:
+            self._record_trade(h, day, reason)
+            del self.holdings[symbol]
+        return pnl
+
+    def _record_trade(self, h: Holding, day: pd.Timestamp, reason: str) -> None:
+        rows = [f for f in self.fills if f["symbol"] == h.symbol and f["entry"] == h.entry]
+        sold = sum(r["qty"] for r in rows) or 1
+        avg_exit = sum(r["price"] * r["qty"] for r in rows) / sold
+        pnl = sum(r["pnl"] for r in rows)
+        self.trades.append({
+            "symbol": h.symbol, "entry_date": h.entry_day, "exit_date": day,
+            "entry": h.entry, "exit": avg_exit, "qty": h.qty, "reason": reason,
+            "days": (day - h.entry_day).days,
+            "r": (avg_exit - h.entry) / h.risk_per_share if h.risk_per_share else 0.0,
+            "ret": avg_exit / h.entry - 1.0, "pnl": pnl,
+            "stop_pct": h.risk_per_share / h.entry if h.entry else 0.0,
+            "levels": [r["reason"] for r in rows],
+            **h.meta,
+        })
+
+    def close_all(self, prices: Dict[str, float], day: pd.Timestamp, reason: str = "end") -> None:
+        for symbol in list(self.holdings):
+            h = self.holdings[symbol]
+            self.sell(symbol, prices.get(symbol, h.entry), h.remaining, day, reason)
 
 
 def _is_scan_day(dates: pd.DatetimeIndex, i: int, weekday: Optional[int]) -> bool:
@@ -158,12 +316,41 @@ def run_backtest(
             "stop_pct": p.risk_per_share / p.entry,
         })
 
+    def sell_part(s: int, price: float, qty: int, i: int, reason: str, stop_fill: bool) -> None:
+        """Kademeli satış. Pozisyon tamamen kapanınca tek işlem satırı yazılır."""
+        nonlocal cash, total_costs
+        p = positions[s]
+        qty = min(qty, p.remaining)
+        if qty <= 0:
+            return
+        slip = cfg.stop_slippage if stop_fill else 0.0
+        fill = price * (1.0 - slip)
+        cost = qty * fill * cfg.cost_per_side
+        cash += qty * fill - cost
+        total_costs += cost
+        p.realized += (fill - p.entry) * qty - cost - qty * p.entry * cfg.cost_per_side
+        p.sold_value += fill * qty
+        p.sold_qty += qty
+        p.remaining -= qty
+        p.levels.append(reason)
+        if p.remaining <= 0:
+            avg = p.sold_value / p.sold_qty
+            positions.pop(s)
+            trades.append({
+                "symbol": panel.symbols[s], "entry_date": dates[p.entry_i], "exit_date": dates[i],
+                "entry": p.entry, "exit": avg, "qty": p.qty, "reason": reason, "days": i - p.entry_i,
+                "r": (avg - p.entry) / p.risk_per_share, "ret": avg / p.entry - 1.0,
+                "pnl": p.realized, "stop_pct": p.risk_per_share / p.entry, "levels": list(p.levels),
+            })
+
+    staged = cfg.exit_model == "atr_staged"
+
     for i in range(i0, i1):
         day = dates[i]
         if cash_growth is not None:
             cash *= float(cash_growth[i])
         key = (day.year, day.month)
-        equity_open = cash + sum(pos.qty * (last_close[s] if not np.isnan(last_close[s]) else pos.entry) for s, pos in positions.items())
+        equity_open = cash + sum((pos.remaining if staged else pos.qty) * (last_close[s] if not np.isnan(last_close[s]) else pos.entry) for s, pos in positions.items())
         if key != month_key:
             month_key, month_start_equity = key, equity_open
         brake_on = equity_open / month_start_equity - 1.0 <= cfg.monthly_brake
@@ -174,7 +361,10 @@ def run_backtest(
                 continue
             if np.isnan(o[i, s]) or _locked_down(o[i, s], h[i, s], l[i, s], c[i, s], last_close[s]):
                 continue
-            close_position(s, float(o[i, s]), i, reason, False)
+            if staged:
+                sell_part(s, float(o[i, s]), positions[s].remaining, i, reason, False)
+            else:
+                close_position(s, float(o[i, s]), i, reason, False)
             exit_flags.pop(s)
 
         filled_today = 0
@@ -201,14 +391,19 @@ def run_backtest(
                     stop = initial_stop(price, order["atr"], cfg)
                     risk_ps = price - stop
                     equity_now = cash + sum(
-                        pos.qty * (o[i, q] if not np.isnan(o[i, q]) else last_close[q]) for q, pos in positions.items()
+                        (pos.remaining if staged else pos.qty) * (o[i, q] if not np.isnan(o[i, q]) else last_close[q])
+                        for q, pos in positions.items()
                     )
                     qty = position_quantity(equity_now, price, stop, order["adv"], cash, cfg)
                     if qty > 0:
                         cost = qty * price * cfg.cost_per_side
                         cash -= qty * price + cost
                         total_costs += cost
-                        positions[s] = Position(s, qty, price, i, stop, risk_ps, price)
+                        lv = levels_for(price, order["atr"], cfg)
+                        positions[s] = Position(
+                            s, qty, price, i, stop, risk_ps, price, remaining=qty,
+                            tp1=lv["tp1"], tp2=lv["tp2"], tp3=lv["tp3"],
+                        )
                         filled_today += 1
                         pending.pop(s, None)
                         continue
@@ -219,6 +414,24 @@ def run_backtest(
             if np.isnan(o[i, s]):
                 continue
             if _locked_down(o[i, s], h[i, s], l[i, s], c[i, s], last_close[s]):
+                continue
+            if staged:
+                state = PositionState(
+                    entry=pos.entry, qty=pos.qty, remaining=pos.remaining, stop=pos.stop,
+                    tp1=pos.tp1, tp2=pos.tp2, tp3=pos.tp3, reached=pos.reached,
+                    top_price=pos.top_close, risk=pos.risk_per_share,
+                )
+                new_state, events = exit_step(
+                    state, float(o[i, s]), float(h[i, s]), float(l[i, s]), cfg
+                )
+                for ev in events:
+                    if ev.qty > 0:
+                        sell_part(s, ev.price, ev.qty, i, ev.kind,
+                                  ev.kind in ("stop", "stop_gap"))
+                if s in positions:
+                    positions[s].stop = new_state.stop
+                    positions[s].reached = new_state.reached
+                    positions[s].remaining = new_state.remaining
                 continue
             if o[i, s] <= pos.stop:
                 close_position(s, float(o[i, s]), i, "stop_gap", True)
@@ -260,12 +473,15 @@ def run_backtest(
                         "days_left": cfg.entry_valid_sessions,
                     }
 
-        value = sum(pos.qty * last_close[s] for s, pos in positions.items())
+        value = sum((pos.remaining if staged else pos.qty) * last_close[s] for s, pos in positions.items())
         curve.append(cash + value)
         invested_curve.append(value / (cash + value))
 
     for s in list(positions):
-        close_position(s, float(last_close[s]), i1 - 1, "end", False)
+        if staged:
+            sell_part(s, float(last_close[s]), positions[s].remaining, i1 - 1, "end", False)
+        else:
+            close_position(s, float(last_close[s]), i1 - 1, "end", False)
 
     index = dates[i0:i1]
     return Result(
