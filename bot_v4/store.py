@@ -95,6 +95,32 @@ class Store:
             "UPDATE positions SET remaining_qty = qty WHERE remaining_qty IS NULL"
         )
 
+    def backfill_levels(self, strategy: Any) -> int:
+        """
+        Eski acik pozisyonlara TP seviyelerini doldurur.
+
+        Kademeli TP'den once acilmis pozisyonlarda tp1/tp2/tp3 bostur; bu
+        pozisyonlar TP bildirimi almaz, yalnizca stop ile yonetilir. Giris
+        fiyati ve ATR kayitli oldugu icin seviyeler yeniden hesaplanabilir.
+
+        `reached_level` bos birakilir: fiyat seviyelerin ustundeyse ilk takip
+        turunda kademeli cikis GUNCEL fiyattan tetiklenir (gap kurali), yani
+        gecmise donuk dusuk fiyatla satis yapilmaz.
+        """
+        from strategy_v4.exits import levels_for
+
+        rows = self._all(
+            "SELECT id, entry, atr FROM positions"
+            " WHERE status = 'open' AND tp1 IS NULL AND atr IS NOT NULL AND atr > 0"
+        )
+        for row in rows:
+            lv = levels_for(float(row["entry"]), float(row["atr"]), strategy)
+            self.update_position(
+                row["id"], tp1=lv["tp1"], tp2=lv["tp2"], tp3=lv["tp3"],
+                exit_model=strategy.exit_model,
+            )
+        return len(rows)
+
     def _run(self, sql: str, args: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
             cur = self._db.execute(sql, tuple(args))

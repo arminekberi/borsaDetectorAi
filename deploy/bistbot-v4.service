@@ -1,16 +1,35 @@
+# BIST bot v4 — systemd servis dosyasi
+#
+# Kurulum (sunucuda):
+#   sudo cp deploy/bistbot-v4.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bistbot-v4
+#   systemctl status bistbot-v4
+#   journalctl -u bistbot-v4 -f
+#
+# Kullanici/dizin kendi sunucuna gore duzenlenmeli (asagidaki User ve
+# WorkingDirectory satirlari). Gelen port acmak GEREKMEZ; bot Telegram'a
+# disaridan baglanir (polling), sadece SSH acik kalir.
+
 [Unit]
-Description=BIST bot v4
+Description=BIST bot v4 (kademeli TP + eminlik + AI analisti)
 After=network-online.target
 Wants=network-online.target
 Conflicts=bistbot.service
 
 [Service]
 Type=simple
-WorkingDirectory=/root/borsaDetectorAi
-ExecStart=/root/borsaDetectorAi/.venv/bin/python main_v4.py
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/borsaDetectorAi
+ExecStart=/home/ubuntu/borsaDetectorAi/.venv/bin/python main_v4.py
 Restart=always
 RestartSec=20
 Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Europe/Istanbul
+# .env dosyasi 600 izinle durmali: chmod 600 .env
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

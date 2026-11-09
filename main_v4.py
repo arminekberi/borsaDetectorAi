@@ -30,15 +30,30 @@ def main() -> None:
         sys.exit(1)
 
     now = datetime.now(ZoneInfo("Europe/Istanbul"))
+    strategy = StrategyConfig()
     store = Store(cfg.db_path)
     store.seed_watchlist(load_watchlist_seed(), now)
+    filled = store.backfill_levels(strategy)
+    if filled:
+        logger.info("%d eski pozisyona TP seviyeleri eklendi", filled)
     sectors = json.loads((ROOT / "config" / "sectors_v4.json").read_text(encoding="utf-8"))
     send = make_sender(cfg)
-    engine = Engine(cfg, StrategyConfig(), store, YahooMarket(), Analyst(cfg, store), send, sectors)
+    analyst = Analyst(cfg, store, strategy=strategy)
+    engine = Engine(cfg, strategy, store, YahooMarket(), analyst, send, sectors)
 
     mode = "KAĞIT" if cfg.paper_mode else "GERÇEK BİLDİRİM"
-    ai = "açık" if cfg.ai_enabled else "kapalı"
-    send(f"🤖 Bot v4 başladı | Mod: {mode} | AI: {ai} | İzleme listesi: {len(store.watchlist())} hisse\n/yardim yazarak komutları görebilirsin.")
+    ai = f"{cfg.ai_model}" if cfg.ai_enabled else "kapalı"
+    lines = [
+        f"🤖 Bot v4 başladı | Mod: {mode} | AI: {ai}",
+        f"İzleme listesi: {len(store.watchlist())} hisse | Çıkış: {strategy.exit_model} "
+        f"(stop {strategy.stop_atr:.0f}×ATR, TP 1,5R/2,5R/3,75R)",
+        f"Eminlik eşiği {cfg.min_eminlik:.0f} | AI olasılık eşiği {cfg.ai_min_olasilik:.0f} "
+        f"| aylık AI bütçesi ${cfg.ai_monthly_budget_usd:.0f}",
+    ]
+    if filled:
+        lines.append(f"{filled} eski pozisyona TP seviyeleri eklendi.")
+    lines.append("/yardim yazarak komutları görebilirsin.")
+    send("\n".join(lines))
 
     threading.Thread(target=Scheduler(cfg, engine).run_forever, daemon=True, name="scheduler").start()
     build_application(cfg, engine).run_polling()
